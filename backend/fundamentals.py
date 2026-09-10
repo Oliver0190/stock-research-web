@@ -121,6 +121,7 @@ def fetch_hk_news(symbol: str, n: int = 5) -> Optional[list]:
                 "summary": content,
                 "time": str(row.get("发布时间", "")).strip(),
                 "source": str(row.get("文章来源", "")).strip(),
+                "url": str(row.get("新闻链接", "")).strip(),
             })
         return items
     except Exception:

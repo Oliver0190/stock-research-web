@@ -28,7 +28,7 @@ def describe_last_kline(df: pd.DataFrame) -> dict:
     else:
         pattern = "小阳线" if body > 0 else "小阴线"
 
-    vol_ma = df["volume"].tail(20).mean()
+    vol_ma = df["volume"].iloc[:-1].tail(20).mean()
     vol_ratio = last["volume"] / vol_ma if vol_ma > 0 else 1.0
 
     return {
@@ -44,10 +44,10 @@ def describe_last_kline(df: pd.DataFrame) -> dict:
     }
 
 
-# ---------- 近两年区间 + 多高低点 ----------
+# ---------- 历史区间 + 多高低点 ----------
 
 def range_stats(df: pd.DataFrame, top_n: int = 2) -> dict:
-    """两年区间, 找出 top-N 高点和低点(局部极值)."""
+    """实际数据区间, 找出 top-N 高点和低点(局部极值)."""
     cur = float(df["close"].iloc[-1])
     highs = df["high"].values
     lows = df["low"].values
@@ -169,10 +169,14 @@ def technical_indicators(df: pd.DataFrame) -> dict:
         kdj_signal = "J超买(高位预警)"
     elif j_now < 0:
         kdj_signal = "J超卖(低位预警/可能反弹)"
+    elif k_now > d_now and k.iloc[-2] <= d.iloc[-2]:
+        kdj_signal = "金叉(短线转强)"
+    elif k_now < d_now and k.iloc[-2] >= d.iloc[-2]:
+        kdj_signal = "死叉(短线转弱)"
     elif k_now > d_now:
-        kdj_signal = "K上穿D(短线偏多)"
+        kdj_signal = "K高于D(短线偏多)"
     else:
-        kdj_signal = "K下穿D(短线偏空)"
+        kdj_signal = "K低于D(短线偏空)"
 
     return {
         "ma": {
@@ -221,17 +225,13 @@ def find_support_resistance(df: pd.DataFrame, min_distance: int = 20) -> dict:
     }
 
 
-# ---------- 参考买入区间 (v2: 锚定到最近支撑位) ----------
+# ---------- 技术参考区间 (v2: 锚定到最近支撑位) ----------
 
 def value_zone(df: pd.DataFrame, sr_min_distance: int = 20) -> dict:
-    """
-    思路:
-    1. 找出近两年所有局部低点(局部支撑位).
-    2. 选当前价**下方最近**的支撑位作锚 (anchor).
-    3. 区间 = anchor ± 3% (合计约 6% 宽度), 收紧不再大宽幅.
-    4. 边界情况:
-       - 当前价在锚下方 -> 已破位, 以当前价 ± 2% 给出弱化区间.
-       - 没有下方支撑 -> 用布林下轨作 anchor.
+    """Anchor to a historical support, ±3%; preserve broken levels instead of moving them to price.
+
+    This is a technical reference, not a valuation. Event detection separately freezes
+    the previous session's zone so recalculation cannot manufacture an entry event.
     """
     closes = df["close"]
     lows = df["low"].values
@@ -252,9 +252,8 @@ def value_zone(df: pd.DataFrame, sr_min_distance: int = 20) -> dict:
         anchor = supports_below[0]
         anchor_desc = f"最近下方支撑位 {anchor:.2f}"
     elif supports_above:
-        # 当前价已跌破所有支撑, 处于破位状态
-        anchor = min(cur, boll_lower)
-        anchor_desc = f"已跌破近期支撑, 以布林下轨 {boll_lower:.2f} 为参考"
+        anchor = min(supports_above)
+        anchor_desc = f"已跌破近期支撑 {anchor:.2f}，保留原技术参考位"
     else:
         anchor = boll_lower
         anchor_desc = f"以布林下轨 {boll_lower:.2f} 为参考"
@@ -263,21 +262,15 @@ def value_zone(df: pd.DataFrame, sr_min_distance: int = 20) -> dict:
     zone_low = round(anchor * 0.97, 2)
     zone_high = round(anchor * 1.03, 2)
 
-    # 如果当前价已低于区间, 收紧到当前位置(说明锚定的支撑也破了)
-    if cur < zone_low:
-        zone_low = round(cur * 0.96, 2)
-        zone_high = round(cur * 1.02, 2)
-        anchor_desc += " (当前价已破支撑, 区间已下移至现价附近)"
-
     # 状态判断
     if zone_low <= cur <= zone_high:
         position = "in_zone"
         distance_pct = 0.0
-        position_desc = "当前价已在参考买入区间内"
+        position_desc = "当前价已在技术参考区间内"
     elif cur > zone_high:
         position = "above_zone"
         distance_pct = round((cur - zone_high) / cur * 100, 2)
-        position_desc = f"当前价高于区间上沿 {distance_pct}%, 需等回调"
+        position_desc = f"当前价高于区间上沿 {distance_pct}%"
     else:
         position = "below_zone"
         distance_pct = round((zone_low - cur) / cur * 100, 2)
@@ -301,8 +294,11 @@ def value_zone(df: pd.DataFrame, sr_min_distance: int = 20) -> dict:
 # ---------- 汇总 ----------
 
 def full_analysis(df: pd.DataFrame, ma_window: int = 60, sr_min_distance: int = 20) -> dict:
+    if len(df) < 20:
+        raise ValueError("至少需要 20 个交易日的有效行情才能生成技术分析")
     return {
         "kline": describe_last_kline(df),
+        "coverage": {"start": df.iloc[0]["date"].strftime("%Y-%m-%d"), "end": df.iloc[-1]["date"].strftime("%Y-%m-%d"), "sessions": len(df)},
         "range": range_stats(df, top_n=2),
         "indicators": technical_indicators(df),
         "support_resistance": find_support_resistance(df, sr_min_distance),

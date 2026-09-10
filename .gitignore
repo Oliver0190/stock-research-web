@@ -7,3 +7,9 @@ venv/
 *.log
 state.json
 .DS_Store
+data/
+.pytest_cache/
+.coverage
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

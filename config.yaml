@@ -40,7 +40,7 @@ watchlist:
     alert_high: 9999
   - symbol: "06809"
     name: 澜起科技
-    # 不设阈值: 只接收盘前简报和盘后快照, 不接收盘中价格预警
+    # 不设固定价格阈值；仍记录基于昨日技术位的盘中事件。
   - symbol: "01211"
     name: 比亚迪股份
     alert_low: 0
@@ -52,6 +52,4 @@ watchlist:
 
 analyzer:
   lookback_days: 730
-  ma_window: 60
   support_resistance_min_distance: 20
-  drawdown_thresholds: [0.2, 0.3, 0.5]

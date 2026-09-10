@@ -1,4 +1,4 @@
-"""数据层 —— yfinance / Stooq 双源, GitHub Actions 上可切 AKShare."""
+"""Daily OHLCV adapters. Always retain source and trading dates."""
 import io
 import os
 import time
@@ -15,20 +15,20 @@ def _hk_yf_symbol(symbol: str) -> str:
 def _fetch_yfinance(symbol: str, lookback_days: int) -> pd.DataFrame:
     import yfinance as yf
     yf_symbol = _hk_yf_symbol(symbol)
-    end = datetime.now()
+    # Yahoo's end boundary is exclusive. Include today's candle when available.
+    end = datetime.now() + timedelta(days=1)
     start = end - timedelta(days=lookback_days + 30)
     start_s = start.strftime("%Y-%m-%d")
     end_s = end.strftime("%Y-%m-%d")
 
     strategies = [
-        lambda: yf.Ticker(yf_symbol).history(start=start_s, end=end_s, interval="1d", auto_adjust=True),
-        lambda: yf.Ticker(yf_symbol).history(period="2y" if lookback_days > 365 else "1y", interval="1d", auto_adjust=True),
-        lambda: yf.download(yf_symbol, start=start_s, end=end_s, interval="1d", auto_adjust=True, progress=False, threads=False),
+        lambda: yf.Ticker(yf_symbol).history(start=start_s, end=end_s, interval="1d", auto_adjust=True, timeout=12),
+        lambda: yf.Ticker(yf_symbol).history(period="2y" if lookback_days > 365 else "1y", interval="1d", auto_adjust=True, timeout=12),
     ]
 
     df = None
     last_err = None
-    for attempt in range(2):
+    for attempt in range(1):
         for strat in strategies:
             try:
                 candidate = strat()
@@ -118,23 +118,8 @@ def fetch_hk_daily(symbol: str, lookback_days: int = 365) -> pd.DataFrame:
         try:
             df = fn(symbol, lookback_days)
             if df is not None and not df.empty:
+                df.attrs["source"] = {"_fetch_yfinance": "Yahoo Finance", "_fetch_stooq": "Stooq", "_fetch_akshare": "东方财富 / AKShare"}[fn.__name__]
                 return df
         except Exception as e:
             errors.append(f"{fn.__name__}: {e}")
     raise RuntimeError(f"all data sources failed for {symbol}: {' | '.join(errors)}")
-
-
-def fetch_hk_spot(symbol: str) -> dict | None:
-    import yfinance as yf
-    ticker = yf.Ticker(_hk_yf_symbol(symbol))
-    df = ticker.history(period="2d", interval="1d")
-    if df is None or df.empty:
-        return None
-    last = df.iloc[-1]
-    prev_close = float(df.iloc[-2]["Close"]) if len(df) >= 2 else float(last["Close"])
-    price = float(last["Close"])
-    return {
-        "symbol": symbol, "name": None, "price": price,
-        "pct_change": (price - prev_close) / prev_close * 100 if prev_close else 0,
-        "high": float(last["High"]), "low": float(last["Low"]),
-    }
