@@ -1,9 +1,8 @@
 name: Daily Snapshot
 
 on:
-  schedule:
-    # 港股 18:30 HKT = 10:30 UTC, 周一至周五 (推迟到收盘后2.5小时, 等数据源更新当日K线)
-    - cron: "30 10 * * 1-5"
+  # 飞书推送于 2026-09-10 停用，准备迁移至网站。
+  # 保留手动入口供历史查看；任务禁用，手动触发也不会发送消息。
   workflow_dispatch:
 
 env:
@@ -11,6 +10,7 @@ env:
 
 jobs:
   snapshot:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

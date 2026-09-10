@@ -1,13 +1,13 @@
 name: Morning Brief
 
 on:
-  schedule:
-    # 港股 09:07 HKT = 01:07 UTC, 周一至周五 (错开整点高峰)
-    - cron: "7 1 * * 1-5"
+  # 飞书推送于 2026-09-10 停用，准备迁移至网站。
+  # 保留手动入口供历史查看；任务禁用，手动触发也不会发送消息。
   workflow_dispatch:
 
 jobs:
   brief:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
