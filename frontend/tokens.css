@@ -1,12 +1,14 @@
 :root {
-  --canvas:#f6f8fc;
+  --canvas:#fcfcfb;
   --paper:#fff;
-  --ink:#26334c;
-  --muted:#8590a5;
-  --line:#e7ebf3;
-  --nav:#121d33;
-  --purple:#6c63dc;
-  --up:#cd7274;
-  --down:#55a084;
-  --numbers:"Segoe UI",Arial,sans-serif
+  --ink:#242b27;
+  --muted:#68716b;
+  --line:#dfe3de;
+  --nav:#f3f4f2;
+  --accent:#244638;
+  --up:#a0443c;
+  --down:#326650;
+  --numbers:"IBM Plex Mono","Cascadia Code","Consolas",monospace;
+  --serif:"Noto Serif CJK SC","Source Han Serif SC","Songti SC","SimSun",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif
 }

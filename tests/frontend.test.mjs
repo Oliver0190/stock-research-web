@@ -12,12 +12,12 @@ test('remote content stays text; active URLs are rejected', () => {
 });
 test('flat prices and missing chart data remain valid', () => {
   assert.ok(!chart([{date:'2026-01-01',close:5},{date:'2026-01-02',close:5}]).includes('NaN'));
-  assert.ok(chart([]).includes('更新行情后'));
+  assert.ok(chart([]).includes('暂无走势数据'));
 });
 test('empty initial workspace and empty stock file render without demo values', () => {
   const stock = {symbol:'00700',name:'测试股票',snapshot:null,profile:{note:''},reports:[],unread:0};
   const data = {stocks:[stock],reports:[],dates:[],market:{today:'2026-09-10',expected_session:'2026-09-09',label:'盘中'},selected_date:'2026-09-10',update:{running:false}};
   const state = {route:'overview',day:'',search:'',filter:'all',drafts:{},range:30,kind:'all',openReports:new Set(),closedReports:new Set()};
-  assert.ok(overview(data,state).includes('首次更新后生成观察'));
-  assert.ok(detail(data,stock,state).includes('研究记录从这里开始'));
+  assert.ok(overview(data,state).includes('等待首次更新'));
+  assert.ok(detail(data,stock,state).includes('暂无研究记录'));
 });

@@ -24,7 +24,7 @@ function render() {
   document.querySelector('#attention-count').textContent = new Set(data.reports.filter(r => r.importance === 'important').map(r => r.symbol)).size || '';
   document.querySelector('#market-status').textContent = `${data.market.label} · 香港时间`;
   document.querySelectorAll('#main-nav a').forEach(a => { const selected = a.hash === `#${state.route}`; a.classList.toggle('active', selected); if (selected) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
-  document.querySelector('#breadcrumb').innerHTML = state.symbol ? `工作区 <span>/</span> 个股档案 <span>/</span> ${e(stock?.name || state.symbol)}` : `工作区 <span>/</span> ${state.route === 'attention' ? '重点变化' : '今日总览'}`;
+  document.querySelector('#breadcrumb').innerHTML = state.symbol ? `研究台 <span>/</span> 个股档案 <span>/</span> ${e(stock?.name || state.symbol)}` : `研究台 <span>/</span> ${state.route === 'attention' ? '重点变化' : '今日总览'}`;
   main.innerHTML = state.symbol && stock ? detail(data, stock, state) : overview(data, state);
   document.title = `${state.symbol && stock ? stock.name : '今日总览'} · 港股观察`;
   if (selection) {
@@ -84,7 +84,7 @@ main.addEventListener('click', async event => {
   try {
     if (action === 'refresh') {
       const result = await api.refresh(symbol);
-      toast(result.started ? '开始更新，已有报告可以继续查看。' : '更新已在进行中，请稍候。');
+      toast(result.started ? '已开始更新' : '正在更新');
       await load();
     } else if (action === 'save-note') {
       const text = document.querySelector('#stock-note').value;
@@ -101,7 +101,7 @@ main.addEventListener('click', async event => {
 main.addEventListener('input', event => {
   if (event.target.id === 'stock-note') {
     state.drafts[state.symbol] = event.target.value;
-    document.querySelector('#note-state').textContent = '有未保存的修改';
+    document.querySelector('#note-state').textContent = '未保存';
   }
   if (event.target.id === 'stock-search') {
     state.search = event.target.value;
