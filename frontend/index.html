@@ -3,25 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="我的港股研究工作区。今日变化、个股档案和连续的研究记录。">
+  <meta name="description" content="A 股与港股研究工作区。今日变化、个股档案和连续的研究记录。">
   <meta name="theme-color" content="#f3f4f2">
-  <title>港股观察 · 研究台</title>
+  <title>市场观察 · 研究台</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/styles.css">
   <script type="module" src="/assets/app.js"></script>
 </head>
-<body>
+<body data-market="HK">
   <a class="skip-link" href="#main">跳到内容</a>
   <div class="workspace">
     <aside class="sidebar" aria-label="主导航">
-      <a href="#overview" class="brand"><span class="brand-mark" aria-hidden="true">HK<span>—</span></span><span>港股观察<small>研究台</small></span></a>
-      <nav id="main-nav"><a href="#overview" class="nav-link active">今日总览</a><a href="#attention" class="nav-link">重点变化<span id="attention-count" class="nav-count"></span></a></nav>
+      <a href="#overview" class="brand"><span class="brand-mark" aria-hidden="true"><span id="brand-market">HK</span><span class="brand-rule">—</span></span><span>市场观察<small>研究台</small></span></a>
+      <nav id="main-nav"><a href="#HK/overview" data-route="overview" class="nav-link active">今日总览</a><a href="#HK/attention" data-route="attention" class="nav-link">重点变化<span id="attention-count" class="nav-count"></span></a></nav>
       <div class="sidebar-label">关注列表 <span id="watch-count">—</span></div>
       <nav id="stock-nav" class="stock-nav" aria-label="自选股票"><p class="sidebar-muted">正在载入关注列表…</p></nav>
       <div class="sidebar-footer"><div>本地存储<small>报告 / 观察笔记</small></div></div>
     </aside>
     <div class="main-shell">
-      <header class="topbar"><div class="breadcrumb" id="breadcrumb">研究台 <span>/</span> 今日总览</div><div class="topbar-right"><span id="market-status" class="market-pill">港股 · 香港时间</span></div></header>
+      <header class="topbar"><div class="breadcrumb" id="breadcrumb">研究台 <span>/</span> 今日总览</div><div class="topbar-right"><nav id="market-switch" class="market-switch" data-market="HK" aria-label="切换市场"><a href="#HK/overview" data-market="HK" class="active" aria-current="true"><span>HK</span>港股</a><a href="#A/overview" data-market="A"><span>CN</span>A股</a></nav><span id="market-status" class="market-pill">港股 · 香港时间</span></div></header>
       <main id="main" tabindex="-1"><div class="initial-state"><span class="spinner"></span><p>载入中</p></div></main>
       <footer class="page-footer"><span>行情可能存在延迟 · 以数据日期为准</span><span>技术分析仅供观察，不构成买卖指令</span></footer>
     </div>

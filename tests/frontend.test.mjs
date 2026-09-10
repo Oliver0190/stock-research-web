@@ -4,6 +4,8 @@ import { escape, markdown, safeUrl } from '../frontend/format.js';
 import { chart } from '../frontend/chart.js';
 import { overview, detail } from '../frontend/views.js';
 import { indicatorPlot, indicatorPanels } from '../frontend/indicators.js';
+import { parseRoute, draftKey } from '../frontend/markets.js';
+import { api } from '../frontend/api.js';
 
 test('remote content stays text; active URLs are rejected', () => {
   assert.equal(escape('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');
@@ -57,4 +59,43 @@ test('indicator ranges keep the last reading and missing archives stay explicit'
   }
   assert.ok(indicatorPanels({data_date:'2026-09-09'},60).includes('这份存档尚未保存指标序列'));
   assert.ok(indicatorPanels(null,60).includes('等待首次行情更新'));
+});
+
+test('market routes preserve old links and reject mismatched code lengths', () => {
+  assert.deepEqual(parseRoute('#stock/00700'), {market:'HK',route:'stock',symbol:'00700'});
+  assert.deepEqual(parseRoute('#A/stock/002594'), {market:'A',route:'stock',symbol:'002594'});
+  assert.deepEqual(parseRoute('#A/stock/00700'), {market:'A',route:'overview',symbol:null});
+  assert.deepEqual(parseRoute('#HK/attention','A'), {market:'HK',route:'attention',symbol:null});
+  assert.deepEqual(parseRoute('#overview','A'), {market:'A',route:'overview',symbol:null});
+  assert.notEqual(draftKey('HK','002594'),draftKey('A','002594'));
+});
+
+test('A-share views use yuan, mainland tickers, scoped links and the correct note', () => {
+  const stock = {market:'A',symbol:'002594',display_symbol:'002594.SZ',name:'比亚迪',snapshot:null,profile:{note:''},reports:[],unread:0};
+  const data = {stocks:[stock],reports:[],dates:[],market:{id:'A',today:'2026-09-10',expected_session:'2026-09-10',label:'已收盘'},selected_date:'2026-09-10',update:{running:false}};
+  const state = {market:'A',route:'overview',day:'',search:'',filter:'all',drafts:{'A:002594':'A 股观察','HK:002594':'不应出现的港股笔记'},range:60,kind:'all',openReports:new Set(),closedReports:new Set()};
+  const home=overview(data,state), profile=detail(data,stock,state);
+  assert.ok(home.includes('人民币 CNY'));
+  assert.ok(home.includes('#A/stock/002594'));
+  assert.ok(profile.includes('002594.SZ'));
+  assert.ok(profile.includes('A 股观察'));
+  assert.ok(!profile.includes('不应出现的港股笔记'));
+  assert.ok(!home.includes('HKD') && !profile.includes('HKD'));
+});
+
+test('every A-share API request carries its market, with HK as the legacy default', async () => {
+  const original=globalThis.fetch, calls=[];
+  globalThis.fetch=async (url, options) => { calls.push({url,options}); return {ok:true,json:async()=>({})}; };
+  try {
+    await api.overview('2026-09-09','A');
+    await api.stock('002594','','A');
+    await api.refresh('002594','A');
+    await api.note('002594','观察','A');
+    await api.read('002594','2026-09-10T18:00:00+08:00',['test'],'A');
+    assert.ok(calls.every(call=>call.url.includes('market=A')));
+    assert.ok(calls[0].url.includes('day=2026-09-09'));
+    assert.equal(JSON.parse(calls[3].options.body).note,'观察');
+    await api.overview('');
+    assert.ok(calls.at(-1).url.includes('market=HK'));
+  } finally { globalThis.fetch=original; }
 });

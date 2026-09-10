@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 import threading
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -9,13 +10,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from backend.market import HK
 from backend.service import ResearchService
-from backend.settings import ROOT
+from backend.settings import ROOT, load_config, database_path
+from backend.store import Store
+
+Market = Literal["HK", "A"]
 
 
 class RefreshRequest(BaseModel):
-    symbol: str | None = Field(default=None, pattern=r"^\d{5}$")
+    symbol: str | None = Field(default=None, pattern=r"^\d{5,6}$")
 
 
 class NoteRequest(BaseModel):
@@ -27,18 +30,24 @@ class ReadRequest(BaseModel):
     report_ids: list[str] = Field(max_length=400)
 
 
-def create_app(service=None, schedule=True):
-    service = service or ResearchService()
+def create_app(service=None, schedule=True, services=None):
+    if service is None and services is None and database_path("HK").resolve() == database_path("A").resolve():
+        raise ValueError("港股与 A 股数据库必须使用不同文件")
+    services = services or ({"HK": service} if service is not None else {
+        market: ResearchService(Store(database_path(market)), load_config(market)) for market in ("HK", "A")
+    })
 
     @asynccontextmanager
     async def lifespan(app):
-        if schedule and service.auto_refresh:
-            threading.Thread(target=service.scheduler, daemon=True, name="stock-scheduler").start()
+        for market, research in services.items():
+            if schedule and research.auto_refresh:
+                threading.Thread(target=research.scheduler, daemon=True, name=f"stock-scheduler-{market}").start()
         yield
-        service.close()
+        for research in services.values():
+            research.close()
 
-    app = FastAPI(title="港股观察", lifespan=lifespan, docs_url=None, redoc_url=None)
-    app.state.service = service
+    app = FastAPI(title="市场观察", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.state.services = services
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
 
     @app.middleware("http")
@@ -63,43 +72,51 @@ def create_app(service=None, schedule=True):
             response.headers["Cache-Control"] = "no-store"
         return response
 
-    def known(symbol):
-        if symbol not in service.items:
+    def selected(market):
+        if market not in services:
+            raise HTTPException(404, "市场尚未启用")
+        return services[market]
+
+    def known(symbol, market):
+        research = selected(market)
+        if symbol not in research.items:
             raise HTTPException(404, "股票不在关注列表中")
+        return research
 
     @app.get("/api/overview")
-    def overview(day: date | None = None):
-        return service.overview(day.isoformat() if day else None)
+    def overview(day: date | None = None, market: Market = "HK"):
+        return selected(market).overview(day.isoformat() if day else None)
 
     @app.get("/api/stocks/{symbol}")
-    def stock(symbol: str, day: date | None = None):
-        known(symbol)
-        return service.detail(symbol, day.isoformat() if day else None)
+    def stock(symbol: str, day: date | None = None, market: Market = "HK"):
+        return known(symbol, market).detail(symbol, day.isoformat() if day else None)
 
     @app.get("/api/status")
-    def status():
-        return {"update": service.status(), "stocks": service.store.statuses()}
+    def status(market: Market = "HK"):
+        research = selected(market)
+        return {"update": research.status(), "stocks": research.store.statuses()}
 
     @app.post("/api/refresh", status_code=202)
-    def refresh(body: RefreshRequest):
+    def refresh(body: RefreshRequest, market: Market = "HK"):
+        research = selected(market)
         if body.symbol:
-            known(body.symbol)
-        started = service.start([body.symbol] if body.symbol else None)
-        return {"started": started, "update": service.status()}
+            known(body.symbol, market)
+        started = research.start([body.symbol] if body.symbol else None)
+        return {"started": started, "update": research.status()}
 
     @app.put("/api/stocks/{symbol}/note")
-    def note(symbol: str, body: NoteRequest):
-        known(symbol)
-        service.store.save_note(symbol, body.note, datetime.now(HK).isoformat(timespec="seconds"))
-        return service.store.profile(symbol)
+    def note(symbol: str, body: NoteRequest, market: Market = "HK"):
+        research = known(symbol, market)
+        research.store.save_note(symbol, body.note, datetime.now(research.tz).isoformat(timespec="seconds"))
+        return research.store.profile(symbol)
 
     @app.post("/api/stocks/{symbol}/read")
-    def read(symbol: str, body: ReadRequest):
-        known(symbol)
+    def read(symbol: str, body: ReadRequest, market: Market = "HK"):
+        research = known(symbol, market)
         if body.through.tzinfo is None:
             raise HTTPException(422, "时间必须含时区")
-        through = body.through.astimezone(HK).isoformat(timespec="seconds")
-        service.store.mark_read(symbol, datetime.now(HK).isoformat(timespec="seconds"), through, body.report_ids)
+        through = body.through.astimezone(research.tz).isoformat(timespec="seconds")
+        research.store.mark_read(symbol, datetime.now(research.tz).isoformat(timespec="seconds"), through, body.report_ids)
         return {"ok": True}
 
     @app.get("/")

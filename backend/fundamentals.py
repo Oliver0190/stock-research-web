@@ -3,6 +3,7 @@
 本地拉不到时(网络屏蔽)优雅返回 None, GitHub Actions 上完整工作."""
 import warnings
 from typing import Optional
+from backend.market import yahoo_symbol
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -103,7 +104,7 @@ def fetch_hk_financials(symbol: str, max_periods: int = 4) -> Optional[dict]:
         return None
 
 
-def fetch_hk_news(symbol: str, n: int = 5) -> Optional[list]:
+def fetch_news(symbol: str, n: int = 5) -> Optional[list]:
     """AKShare 个股新闻, 带来源字段."""
     try:
         import akshare as ak
@@ -157,12 +158,12 @@ def fetch_hk_balance_cash(symbol: str) -> Optional[float]:
         return None
 
 
-def fetch_next_earnings_date(symbol: str) -> Optional[str]:
+def fetch_next_earnings_date(symbol: str, market="HK") -> Optional[str]:
     """yfinance 取**未来**最近一次财报日期 (过滤掉已过去的日期)."""
     try:
         from datetime import datetime
         import yfinance as yf
-        yf_sym = symbol.lstrip("0").zfill(4) + ".HK"
+        yf_sym = yahoo_symbol(symbol, market)
         ticker = yf.Ticker(yf_sym)
         cal = ticker.calendar
         if not cal:
@@ -235,15 +236,18 @@ def _compute_cash_runway(financials: dict, cash: Optional[float]) -> Optional[di
     }
 
 
-def fetch_fundamentals(symbol: str, configured_name: str = "") -> dict:
+def fetch_fundamentals(symbol: str, configured_name: str = "", market="HK") -> dict:
     """组合接口: 公司名核验 + 财报 + 新闻 + 下次财报日期 + 现金跑道."""
+    if market == "A":
+        from backend.a_fundamentals import fetch_fundamentals as fetch_a
+        return fetch_a(symbol, configured_name)
     financials = fetch_hk_financials(symbol)
     cash = fetch_hk_balance_cash(symbol) if financials else None
     return {
         "company_name_from_source": fetch_hk_company_name(symbol),
         "configured_name": configured_name,
         "financials": financials,
-        "news": fetch_hk_news(symbol),
+        "news": fetch_news(symbol),
         "next_earnings_date": fetch_next_earnings_date(symbol),
         "cash_runway": _compute_cash_runway(financials, cash),
     }

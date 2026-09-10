@@ -11,9 +11,9 @@ export async function request(path, options = {}) {
 }
 
 export const api = {
-  overview: day => request(`/overview${day ? `?day=${encodeURIComponent(day)}` : ''}`),
-  stock: (symbol, day) => request(`/stocks/${symbol}${day ? `?day=${encodeURIComponent(day)}` : ''}`),
-  refresh: symbol => request('/refresh', { method: 'POST', body: JSON.stringify({ symbol: symbol || null }) }),
-  note: (symbol, note) => request(`/stocks/${symbol}/note`, { method: 'PUT', body: JSON.stringify({ note }) }),
-  read: (symbol, through, report_ids) => request(`/stocks/${symbol}/read`, { method: 'POST', body: JSON.stringify({ through, report_ids }) }),
+  overview: (day, market = 'HK') => request(`/overview?market=${market}${day ? `&day=${encodeURIComponent(day)}` : ''}`),
+  stock: (symbol, day, market = 'HK') => request(`/stocks/${symbol}?market=${market}${day ? `&day=${encodeURIComponent(day)}` : ''}`),
+  refresh: (symbol, market = 'HK') => request(`/refresh?market=${market}`, { method: 'POST', body: JSON.stringify({ symbol: symbol || null }) }),
+  note: (symbol, note, market = 'HK') => request(`/stocks/${symbol}/note?market=${market}`, { method: 'PUT', body: JSON.stringify({ note }) }),
+  read: (symbol, through, report_ids, market = 'HK') => request(`/stocks/${symbol}/read?market=${market}`, { method: 'POST', body: JSON.stringify({ through, report_ids }) }),
 };

@@ -13,3 +13,5 @@ data/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+# Imported legacy repository is retained locally as a migration reference.
+/Stock Agent(A)/
