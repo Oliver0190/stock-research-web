@@ -222,6 +222,47 @@ details[open] .collapse-text { display:inline; }
 .report-footer { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; margin-top:15px; font-size:12px; color:var(--muted); }
 .report-warning { margin-top:10px; font-size:12px; color:#826230; }
 
+/* MACD and KDJ share the price chart's date range. */
+.indicator-section { margin-top:30px; }
+.indicator-context { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px 20px; padding-bottom:14px; border-bottom:1px solid var(--ink); }
+.indicator-context > span { color:var(--muted); font-size:12px; }
+.indicator-panel { padding:23px 0 21px; border-bottom:1px solid var(--line); }
+.indicator-heading { display:flex; align-items:baseline; flex-wrap:wrap; gap:10px 22px; }
+.indicator-heading h3 { font:500 16px/1.6 var(--numbers); white-space:nowrap; }
+.indicator-heading h3 > span { color:var(--muted); font-size:12px; }
+.indicator-legend { display:flex; align-items:center; flex-wrap:wrap; gap:8px 18px; }
+.indicator-legend-item { display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap; }
+.indicator-legend-item b { font:13px/1.5 var(--numbers); font-variant-numeric:tabular-nums; }
+.legend-line { width:17px; height:0; border-top:2px solid; display:inline-block; }
+.legend-line.series-1 { border-color:var(--indicator-first); }
+.legend-line.series-2 { border-color:var(--indicator-second); border-top-style:dashed; }
+.legend-line.series-3 { border-color:var(--indicator-third); border-top-style:dotted; }
+.legend-bar { width:7px; height:9px; border:1px solid var(--muted); }
+.indicator-caption { margin:7px 0 14px; font-size:12px; color:var(--muted); }
+.indicator-plot { overflow-x:auto; }
+.indicator-plot svg { display:block; width:100%; min-width:520px; height:auto; }
+.indicator-line { fill:none; stroke-width:1.6; stroke-linejoin:round; stroke-linecap:round; vector-effect:non-scaling-stroke; }
+.indicator-line.series-1 { stroke:var(--indicator-first); }
+.indicator-line.series-2 { stroke:var(--indicator-second); stroke-dasharray:6 3; }
+.indicator-line.series-3 { stroke:var(--indicator-third); stroke-dasharray:2 3; }
+.indicator-guide { stroke:var(--line); stroke-width:1; stroke-dasharray:4 5; }
+.indicator-guide.zero { stroke:var(--muted); stroke-dasharray:none; }
+.indicator-tick { fill:var(--muted); font:15px var(--numbers); }
+.indicator-bar { stroke-width:1; vector-effect:non-scaling-stroke; }
+.indicator-bar.up { fill:var(--up); fill-opacity:.6; stroke:var(--up); }
+.indicator-bar.down { fill:var(--canvas); stroke:var(--down); }
+.indicator-bar.neutral { fill:var(--muted); }
+.indicator-hit { fill:transparent; }
+.indicator-dates { padding-top:7px; }
+.indicator-reading { margin-top:18px; padding-left:12px; border-left:2px solid var(--line); }
+.indicator-reading p { font-size:13px; line-height:1.9; }
+.indicator-reading p + p { margin-top:4px; color:var(--muted); }
+.indicator-empty { min-height:80px; display:flex; align-items:center; color:var(--muted); font-size:13px; }
+.indicator-method { margin-top:13px; color:var(--muted); font-size:12px; }
+.indicator-method summary { padding:4px 0; }
+.indicator-method p { margin-top:10px; line-height:1.9; }
+.indicator-method a { margin-left:8px; text-decoration:underline; text-underline-offset:3px; }
+
 /* Loading and feedback */
 .initial-state { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; min-height:55vh; color:var(--muted); }
 .empty-state { padding:46px 20px; text-align:center; color:var(--muted); }

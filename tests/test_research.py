@@ -114,6 +114,17 @@ class ResearchTests(unittest.TestCase):
         frame.loc[frame.index[-1], "volume"] = 3000
         self.assertEqual(analyzer.describe_last_kline(frame)["volume_ratio"], 3.0)
 
+    def test_indicator_history_is_persisted_with_the_matching_snapshot(self):
+        self.rows = history("2026-09-10")
+        self.refresh(ctx("intraday", expected="2026-09-09"))
+        for day in ("2026-09-09", "2026-09-10"):
+            snapshot = self.store.snapshot("00700", day)
+            last = snapshot["indicator_chart"]["series"][-1]
+            self.assertEqual(last["date"], day)
+            self.assertEqual(snapshot["chart"][-1]["date"], day)
+            self.assertAlmostEqual(last["dif"], snapshot["analysis"]["indicators"]["macd"]["dif"], delta=.00051)
+            self.assertIsNotNone(snapshot["indicator_chart"]["kdj"])
+
     def test_api_persists_notes_and_rejects_cross_site_writes(self):
         app = create_app(self.service, schedule=False)
         with TestClient(app) as client:

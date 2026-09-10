@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 
+from backend.indicators import oscillator_frame, macd_reading, kdj_reading
+
 
 # ---------- K 线形态 ----------
 
@@ -136,47 +138,22 @@ def technical_indicators(df: pd.DataFrame) -> dict:
         boll_pos = "中轨下方(偏弱)"
 
     # ---- MACD (12, 26, 9) ----
-    ema12 = closes.ewm(span=12, adjust=False).mean()
-    ema26 = closes.ewm(span=26, adjust=False).mean()
-    dif = ema12 - ema26
-    dea = dif.ewm(span=9, adjust=False).mean()
-    macd_bar = (dif - dea) * 2
+    oscillators = oscillator_frame(df)
+    dif, dea, macd_bar = (oscillators[key] for key in ("dif", "dea", "macd_bar"))
 
-    dif_now, dif_prev = dif.iloc[-1], dif.iloc[-2] if len(dif) >= 2 else dif.iloc[-1]
-    dea_now, dea_prev = dea.iloc[-1], dea.iloc[-2] if len(dea) >= 2 else dea.iloc[-1]
-
-    if dif_now > dea_now and dif_prev <= dea_prev:
-        macd_signal = "金叉(看涨信号)"
-    elif dif_now < dea_now and dif_prev >= dea_prev:
-        macd_signal = "死叉(看跌信号)"
-    elif dif_now > 0 and dea_now > 0:
-        macd_signal = "零轴上方多头" + ("(柱状放大)" if macd_bar.iloc[-1] > macd_bar.iloc[-2] else "(柱状缩短)")
-    elif dif_now < 0 and dea_now < 0:
-        macd_signal = "零轴下方空头" + ("(柱状缩短-修复中)" if macd_bar.iloc[-1] > macd_bar.iloc[-2] else "(柱状放大-加速下跌)")
-    else:
-        macd_signal = "零轴附近(变盘临界)"
+    current, previous = oscillators.iloc[-1], oscillators.iloc[-2]
+    dif_now, dea_now = current["dif"], current["dea"]
+    macd_view = macd_reading(current, previous)
+    macd_signal = {"golden": "新金叉(DIF 上穿 DEA)", "death": "新死叉(DIF 下穿 DEA)"}.get(macd_view["cross"], macd_view["summary"])
+    if len(df) < 35:
+        macd_signal = "数据不足(至少 35 个交易日)"
 
     # ---- KDJ (9, 3, 3) ----
-    low9 = lows.rolling(9).min()
-    high9 = highs.rolling(9).max()
-    rsv = ((closes - low9) / (high9 - low9) * 100).fillna(50)
-    k = rsv.ewm(com=2, adjust=False).mean()
-    d = k.ewm(com=2, adjust=False).mean()
-    j = 3 * k - 2 * d
+    k, d, j = (oscillators[key] for key in ("k", "d", "j"))
 
     k_now, d_now, j_now = k.iloc[-1], d.iloc[-1], j.iloc[-1]
-    if j_now > 100:
-        kdj_signal = "J超买(高位预警)"
-    elif j_now < 0:
-        kdj_signal = "J超卖(低位预警/可能反弹)"
-    elif k_now > d_now and k.iloc[-2] <= d.iloc[-2]:
-        kdj_signal = "金叉(短线转强)"
-    elif k_now < d_now and k.iloc[-2] >= d.iloc[-2]:
-        kdj_signal = "死叉(短线转弱)"
-    elif k_now > d_now:
-        kdj_signal = "K高于D(短线偏多)"
-    else:
-        kdj_signal = "K低于D(短线偏空)"
+    kdj_view = kdj_reading(current, previous)
+    kdj_signal = {"golden": "新金叉(K 上穿 D)", "death": "新死叉(K 下穿 D)"}.get(kdj_view["cross"], kdj_view["summary"])
 
     return {
         "ma": {
@@ -192,9 +169,9 @@ def technical_indicators(df: pd.DataFrame) -> dict:
             "band_width_pct": round((boll_upper - boll_lower) / boll_mid * 100, 2) if not pd.isna(boll_mid) else None,
         },
         "macd": {
-            "dif": round(_safe(dif_now), 3) if dif_now is not None else None,
-            "dea": round(_safe(dea_now), 3) if dea_now is not None else None,
-            "macd_bar": round(_safe(macd_bar.iloc[-1]), 3),
+            "dif": round(float(dif_now), 3) if len(df) >= 35 else None,
+            "dea": round(float(dea_now), 3) if len(df) >= 35 else None,
+            "macd_bar": round(float(macd_bar.iloc[-1]), 3) if len(df) >= 35 else None,
             "signal": macd_signal,
         },
         "kdj": {

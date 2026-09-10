@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from backend import analyzer, reports
+from backend.indicators import chart_payload
 from backend.market import HK, market_context
 from backend.settings import ROOT, load_config
 from backend.store import Store, encode
@@ -175,7 +176,7 @@ class ResearchService:
                   "volume": float(row["volume"])} for _, row in frame.tail(120).iterrows()]
         return json.loads(encode({"analysis": analysis, "data_date": analysis["kline"]["date"], "source": source,
                                  "fetched_at": now, "complete": complete, "changes": changes,
-                                 "chart": chart, "fundamentals": fund}))
+                                 "chart": chart, "indicator_chart": chart_payload(frame), "fundamentals": fund}))
 
     def overview(self, date=None):
         ctx = market_context()
