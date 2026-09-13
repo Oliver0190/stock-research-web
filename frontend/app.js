@@ -2,9 +2,10 @@ import { api } from './api.js';
 import { escape as e } from './format.js';
 import { overview, detail, sidebar, watchTable } from './views.js';
 import { markets, draftKey, routeHref, parseRoute } from './markets.js';
+import { initWatchlist } from './watchlist.js';
 
 const main = document.querySelector('#main');
-const state = { market:'HK', route: 'overview', symbol: null, day: '', filter: 'all', kind: 'all', search: '', range: 60, drafts: {}, openReports: new Set(), closedReports: new Set() };
+const state = { market:'HK', route: 'overview', symbol: null, day: '', filter: 'all', kind: 'all', search: '', range: 60, newsFilter:'important', newsExpanded:false, drafts: {}, openReports: new Set(), closedReports: new Set() };
 let data, stock, revision = 0, pollTimer, toastTimer;
 
 function toast(message, error = false) {
@@ -96,6 +97,7 @@ function route() {
     document.querySelector('#attention-count').textContent = '';
   }
   state.kind = 'all';
+  state.newsFilter = 'important'; state.newsExpanded = false;
   stock = null;
   renderNavigation();
   load({ read: Boolean(state.symbol) });
@@ -106,10 +108,13 @@ main.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const { action, value, symbol } = button.dataset;
+  if (action === 'manage-watchlist') return;
   const market = state.market;
   if (action === 'filter') { state.filter = value; render(); return; }
   if (action === 'kind') { state.kind = value; render(); return; }
   if (action === 'range') { state.range = Number(value); render(); return; }
+  if (action === 'news-filter') { state.newsFilter = value; state.newsExpanded = false; render(); return; }
+  if (action === 'news-expand') { state.newsExpanded = !state.newsExpanded; render(); return; }
   if (action === 'retry') { load(); return; }
   button.disabled = true;
   try {
@@ -151,4 +156,9 @@ main.addEventListener('toggle', event => {
 }, true);
 window.addEventListener('hashchange', route);
 window.addEventListener('beforeunload', event => { if (Object.keys(state.drafts).length) { event.preventDefault(); event.returnValue = ''; } });
+initWatchlist({ getMarket: () => state.market, onChange: async (market, removed) => {
+  if (market !== state.market) return;
+  if (removed && state.symbol === removed) location.hash = routeHref(market);
+  else await load();
+} });
 route();

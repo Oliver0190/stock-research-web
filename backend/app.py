@@ -25,6 +25,10 @@ class NoteRequest(BaseModel):
     note: str = Field(max_length=10000)
 
 
+class AddStockRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=12)
+
+
 class ReadRequest(BaseModel):
     through: datetime
     report_ids: list[str] = Field(max_length=400)
@@ -87,6 +91,25 @@ def create_app(service=None, schedule=True, services=None):
     def overview(day: date | None = None, market: Market = "HK"):
         return selected(market).overview(day.isoformat() if day else None)
 
+    @app.get("/api/watchlist")
+    def watchlist(market: Market = "HK"):
+        return {"stocks": list(selected(market).watch_items().values())}
+
+    @app.post("/api/watchlist", status_code=201)
+    def add_stock(body: AddStockRequest, market: Market = "HK"):
+        try:
+            return selected(market).add_stock(body.symbol)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(503, str(error)) from error
+
+    @app.delete("/api/watchlist/{symbol}")
+    def remove_stock(symbol: str, market: Market = "HK"):
+        research = selected(market)
+        research.remove_stock(symbol)
+        return {"ok": True}
+
     @app.get("/api/stocks/{symbol}")
     def stock(symbol: str, day: date | None = None, market: Market = "HK"):
         return known(symbol, market).detail(symbol, day.isoformat() if day else None)
@@ -94,7 +117,8 @@ def create_app(service=None, schedule=True, services=None):
     @app.get("/api/status")
     def status(market: Market = "HK"):
         research = selected(market)
-        return {"update": research.status(), "stocks": research.store.statuses()}
+        active = research.watch_items()
+        return {"update": research.status(), "stocks": {s:v for s,v in research.store.statuses().items() if s in active}}
 
     @app.post("/api/refresh", status_code=202)
     def refresh(body: RefreshRequest, market: Market = "HK"):

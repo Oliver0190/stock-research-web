@@ -52,6 +52,7 @@ def _call(prompt: str, model: str) -> str:
 def website_report(kind, item, analysis, changes, model, fundamentals=None):
     if fundamentals:
         fundamentals = {key: fundamentals.get(key) for key in ("financials", "news", "next_earnings_date")}
+        fundamentals["news"] = [item for item in fundamentals.get("news") or [] if item.get("importance") == "important"][:6]
     context = {"stock": item, "kind": kind, "analysis": analysis,
                "verified_changes": changes, "fundamentals": fundamentals}
     prompt = f"""为股票研究网站写一篇简短的{'盘前观察' if kind == 'morning' else '收盘复盘'}。

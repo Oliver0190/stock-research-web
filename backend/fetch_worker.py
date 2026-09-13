@@ -4,13 +4,22 @@ import sys
 
 from backend import data, fundamentals
 from backend.store import encode
+from backend.watchlist import resolve_stock
+from backend.news import fetch_news
 
 
 def main():
     symbol, mode = sys.argv[1:3]
     market = sys.argv[4] if len(sys.argv) > 4 else "HK"
     with contextlib.redirect_stdout(sys.stderr):
-        if mode == "fundamentals":
+        if mode == "lookup":
+            try:
+                result = resolve_stock(symbol, market)
+            except ValueError as error:
+                result = {"error": str(error)}
+        elif mode == "news":
+            result = fetch_news(symbol, sys.argv[3])
+        elif mode == "fundamentals":
             result = fundamentals.fetch_fundamentals(symbol, configured_name=sys.argv[3], market=market)
         else:
             df = data.fetch_daily(symbol, int(sys.argv[3]), market=market)

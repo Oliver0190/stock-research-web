@@ -17,6 +17,8 @@ from backend.indicators import chart_payload
 from backend.market import MARKETS, instrument, market_context
 from backend.settings import ROOT, load_config
 from backend.store import Store, encode
+from backend.watchlist import normalize_code
+from backend.news import NEWS_VERSION, rank_news
 
 log = logging.getLogger(__name__)
 
@@ -26,9 +28,11 @@ def isolated_fetch(symbol, mode, argument, market="HK"):
     try:
         result = subprocess.run([sys.executable, "-m", "backend.fetch_worker", symbol, mode, str(argument), market],
                                 cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8",
-                                timeout=65 if mode == "market" else 25)
+                                timeout=65 if mode == "market" else 12 if mode == "lookup" else 25)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError("数据源响应超时，可稍后重试") from e
+    if mode == "lookup" and result.returncode:
+        raise RuntimeError("暂时无法核验股票代码，请稍后重试")
     if result.returncode:
         raise RuntimeError("行情源暂时不可用，已保留上次成功的数据")
     return json.loads(result.stdout)
@@ -44,8 +48,10 @@ class ResearchService:
         self.info = MARKETS[self.market]
         self.tz = ZoneInfo(self.info["timezone"])
         self.fetcher = fetcher or partial(isolated_fetch, market=self.market)
-        self.items = {s["symbol"]: {**s, **instrument(s["symbol"], self.market)} for s in self.config["watchlist"]}
+        self.store.seed_watchlist(self.config["watchlist"])
+        self.items = {s["symbol"]: {**s, **instrument(s["symbol"], self.market)} for s in self.store.watchlist()}
         self.lock = threading.Lock()
+        self.pending = set()
         self.stop_event = threading.Event()
         self.progress = {"running": False, "completed": 0, "total": 0, "failures": 0, "started_at": None}
         self.auto_refresh = os.environ.get("STOCK_AGENT_AUTO_REFRESH", "1") != "0"
@@ -54,12 +60,47 @@ class ResearchService:
         with self.lock:
             return {**self.progress, "auto_refresh": self.auto_refresh}
 
-    def start(self, symbols=None):
-        symbols = symbols or list(self.items)
-        if any(symbol not in self.items for symbol in symbols):
-            raise ValueError("股票不在关注列表中")
+    def watch_items(self):
         with self.lock:
+            return dict(self.items)
+
+    def add_stock(self, value):
+        symbol = normalize_code(value, self.market)
+        with self.lock:
+            if symbol in self.items:
+                return {"stock": self.items[symbol], "added": False}
+        resolved = self.fetcher(symbol, "lookup", "")
+        if resolved.get("error"):
+            raise ValueError(resolved["error"])
+        if resolved.get("symbol") != symbol or not resolved.get("name"):
+            raise RuntimeError("暂时无法核验股票代码，请稍后重试")
+        with self.lock:
+            if symbol in self.items:
+                return {"stock": self.items[symbol], "added": False}
+            item = self.store.add_stock({"name": resolved["name"], **instrument(symbol, self.market)})
+            self.items[symbol] = item
+        self.start([symbol], queue=True)
+        return {"stock": item, "added": True}
+
+    def remove_stock(self, symbol):
+        with self.lock:
+            self.store.remove_stock(symbol)
+            self.items.pop(symbol, None)
+            self.pending.discard(symbol)
+
+    def start(self, symbols=None, queue=False):
+        with self.lock:
+            symbols = list(self.items) if symbols is None else list(symbols)
+            if any(symbol not in self.items for symbol in symbols):
+                if queue:
+                    symbols = [s for s in symbols if s in self.items]
+                else:
+                    raise ValueError("股票不在关注列表中")
+            if not symbols:
+                return False
             if self.progress["running"]:
+                if queue:
+                    self.pending.update(symbols)
                 return False
             self.progress = {"running": True, "completed": 0, "total": len(symbols), "failures": 0,
                              "started_at": datetime.now(self.tz).isoformat(timespec="seconds")}
@@ -68,8 +109,9 @@ class ResearchService:
 
     def _run(self, symbols):
         try:
+            items = self.watch_items()
             with ThreadPoolExecutor(max_workers=3) as pool:
-                futures = {pool.submit(self.refresh_one, self.items[s]): s for s in symbols}
+                futures = {pool.submit(self.refresh_one, items[s]): s for s in symbols if s in items}
                 for future in as_completed(futures):
                     symbol, failed = futures[future], False
                     try:
@@ -85,6 +127,10 @@ class ResearchService:
         finally:
             with self.lock:
                 self.progress["running"] = False
+                pending = list(self.pending)
+                self.pending.clear()
+            if pending and not self.stop_event.is_set():
+                self.start(pending, queue=True)
 
     def refresh_one(self, item, context=None):
         ctx = context or market_context(market=self.market)
@@ -139,18 +185,27 @@ class ResearchService:
             self.store.set_status(symbol, "enriching", "行情已保存，正在补充解读", now)
         # Persist facts before optional slow enrichments. Repeated refreshes reuse successful prose.
         ai_issue = None
+        fund = dict(fund or {})
+        if fund.get("fetched_date") != ctx["today"]:
+            try:
+                fresh_fund = self.fetcher(symbol, "fundamentals", item["name"])
+                fund.update({k:v for k,v in fresh_fund.items() if not k.startswith("news")})
+                fund["fetched_date"] = ctx["today"]
+            except Exception:
+                pass
+        if fund.get("news_version") != NEWS_VERSION or fund.get("news_fetched_date") != ctx["today"]:
+            try:
+                news = self.fetcher(symbol, "news", item["name"])
+                if news.get("news") is not None:
+                    fund.update(news)
+            except Exception:
+                fund["news_issue"] = "新闻暂未更新，已保留上次内容"
+        payload["fundamentals"] = fund
+        self.store.put_snapshot(symbol, payload, now)
+        if latest_date == ctx["today"] and ctx["phase"] in {"intraday", "break", "settling"} and not stale:
+            observation["fundamentals"] = fund
+            self.store.put_snapshot(symbol, observation, now)
         if not prior_report or prior_report["engine"] != "ai":
-            if not fund or fund.get("fetched_date") != ctx["today"]:
-                try:
-                    fund = self.fetcher(symbol, "fundamentals", item["name"])
-                    fund["fetched_date"] = ctx["today"]
-                    payload["fundamentals"] = fund
-                    self.store.put_snapshot(symbol, payload, now)
-                    if latest_date == ctx["today"] and ctx["phase"] in {"intraday", "break", "settling"} and not stale:
-                        observation["fundamentals"] = fund
-                        self.store.put_snapshot(symbol, observation, now)
-                except Exception:
-                    pass
             body, engine, ai_issue = reports.compose(kind, item, baseline, changes, self.config["llm"]["model"], fund)
             self.store.put_report({**report, "body": body, "engine": engine,
                                    "metadata": {**report["metadata"], "ai_issue": ai_issue}})
@@ -168,7 +223,8 @@ class ResearchService:
         ctx = market_context(market=self.market)
         day = date or ctx["today"]
         stocks, statuses = [], self.store.statuses()
-        for symbol, item in self.items.items():
+        items = self.watch_items()
+        for symbol, item in items.items():
             snapshot = self.store.snapshot(symbol, date)
             stock_reports = self.store.reports(symbol, day)
             all_reports = self.store.reports(symbol)
@@ -176,14 +232,19 @@ class ResearchService:
                            "summary": stock_reports[0]["summary"] if stock_reports else None,
                            "unread": sum(r["importance"] == "important" and not r["read_at"] for r in all_reports),
                            "important": any(r["importance"] == "important" for r in stock_reports)})
-        return {"stocks": stocks, "market": ctx, "selected_date": day, "dates": self.store.dates(),
-                "reports": self.store.reports(date=day), "update": self.status(),
+        return {"stocks": stocks, "market": ctx, "selected_date": day, "dates": self.store.dates(symbols=list(items)),
+                "reports": self.store.reports(date=day, symbols=list(items)), "update": self.status(),
                 "ai_available": bool(os.environ.get("DEEPSEEK_API_KEY"))}
 
     def detail(self, symbol, date=None):
-        if symbol not in self.items:
+        items = self.watch_items()
+        if symbol not in items:
             raise KeyError(symbol)
-        return {**self.items[symbol], "snapshot": self.store.snapshot(symbol, date),
+        snapshot = self.store.snapshot(symbol, date)
+        if snapshot and snapshot.get("fundamentals"):
+            fund = snapshot["fundamentals"]
+            fund["news"] = rank_news(fund.get("news"), symbol, items[symbol]["name"], fund.get("news_fetched_date") or fund.get("fetched_date") or snapshot["data_date"])
+        return {**items[symbol], "snapshot": snapshot,
                 "reports": self.store.reports(symbol, date), "profile": self.store.profile(symbol),
                 "status": self.store.statuses().get(symbol), "retrieved_at": datetime.now(self.tz).isoformat(timespec="seconds")}
 

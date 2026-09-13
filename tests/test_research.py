@@ -161,6 +161,29 @@ class ResearchTests(unittest.TestCase):
         self.service.progress["running"] = True
         self.assertFalse(self.service.start())
 
+    def test_news_refresh_is_independent_of_cached_ai_report_and_failure_keeps_news(self):
+        self.rows = history('2026-09-10')
+        original_fetch = self.fetch
+        article = {'title':'测试股票中报营收增长','time':'2026-09-10 10:00:00','source':'fixture'}
+        def fetch(symbol, mode, argument):
+            if mode == 'news':
+                return {'news':[article], 'news_version':1, 'news_fetched_date':'2026-09-10'}
+            return original_fetch(symbol,mode,argument)
+        self.service.fetcher = fetch
+        with patch('backend.reports.compose',return_value=('已保存的解读','ai',None)):
+            self.refresh()
+        def failed_news(symbol,mode,argument):
+            if mode == 'news': raise RuntimeError('offline')
+            return original_fetch(symbol,mode,argument)
+        self.service.fetcher = failed_news
+        with patch('backend.reports.compose') as compose:
+            self.refresh(ctx('holiday',today='2026-09-11',expected='2026-09-10'))
+            compose.assert_not_called()
+        fund=self.service.detail('00700')['snapshot']['fundamentals']
+        self.assertEqual(fund['news'][0]['title'],article['title'])
+        self.assertIn('保留',fund['news_issue'])
+        self.assertEqual(self.store.reports()[0]['body'],'已保存的解读')
+
 
 class CalendarTests(unittest.TestCase):
     def test_weekend_and_holiday(self):

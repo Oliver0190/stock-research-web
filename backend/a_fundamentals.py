@@ -1,5 +1,5 @@
 """A-share financials normalized into the website's existing report schema."""
-from backend.fundamentals import _safe_num, fetch_news, fetch_next_earnings_date
+from backend.fundamentals import _safe_num, fetch_next_earnings_date
 from backend.market import instrument
 
 
@@ -31,5 +31,5 @@ def fetch_fundamentals(symbol, configured_name=""):
         financials = financial_records(ak.stock_profit_sheet_by_report_em(symbol=exchange + symbol))
     except Exception:
         pass
-    return {"configured_name": configured_name, "financials": financials, "news": fetch_news(symbol),
+    return {"configured_name": configured_name, "financials": financials,
             "next_earnings_date": fetch_next_earnings_date(symbol, market="A")}

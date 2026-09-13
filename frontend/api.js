@@ -11,6 +11,9 @@ export async function request(path, options = {}) {
 }
 
 export const api = {
+  watchlist: (market = 'HK') => request(`/watchlist?market=${market}`),
+  addStock: (symbol, market = 'HK') => request(`/watchlist?market=${market}`, { method:'POST', body:JSON.stringify({symbol}) }),
+  removeStock: (symbol, market = 'HK') => request(`/watchlist/${symbol}?market=${market}`, { method:'DELETE', body:'{}' }),
   overview: (day, market = 'HK') => request(`/overview?market=${market}${day ? `&day=${encodeURIComponent(day)}` : ''}`),
   stock: (symbol, day, market = 'HK') => request(`/stocks/${symbol}?market=${market}${day ? `&day=${encodeURIComponent(day)}` : ''}`),
   refresh: (symbol, market = 'HK') => request(`/refresh?market=${market}`, { method: 'POST', body: JSON.stringify({ symbol: symbol || null }) }),

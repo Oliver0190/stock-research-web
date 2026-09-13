@@ -16,7 +16,7 @@
     <aside class="sidebar" aria-label="主导航">
       <a href="#overview" class="brand"><span class="brand-mark" aria-hidden="true"><span id="brand-market">HK</span><span class="brand-rule">—</span></span><span>市场观察<small>研究台</small></span></a>
       <nav id="main-nav"><a href="#HK/overview" data-route="overview" class="nav-link active">今日总览</a><a href="#HK/attention" data-route="attention" class="nav-link">重点变化<span id="attention-count" class="nav-count"></span></a></nav>
-      <div class="sidebar-label">关注列表 <span id="watch-count">—</span></div>
+      <div class="sidebar-label"><span>关注列表 <span id="watch-count">—</span></span><button class="text-button" data-action="manage-watchlist">管理</button></div>
       <nav id="stock-nav" class="stock-nav" aria-label="自选股票"><p class="sidebar-muted">正在载入关注列表…</p></nav>
       <div class="sidebar-footer"><div>本地存储<small>报告 / 观察笔记</small></div></div>
     </aside>
@@ -26,6 +26,7 @@
       <footer class="page-footer"><span>行情可能存在延迟 · 以数据日期为准</span><span>技术分析仅供观察，不构成买卖指令</span></footer>
     </div>
   </div>
+  <dialog id="watchlist-dialog" class="watchlist-dialog" aria-labelledby="manage-title"></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

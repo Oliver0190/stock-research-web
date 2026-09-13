@@ -44,7 +44,12 @@ class Store:
                     symbol TEXT PRIMARY KEY, state TEXT NOT NULL, message TEXT NOT NULL,
                     attempted_at TEXT NOT NULL
                 );
-                PRAGMA user_version=1;
+                CREATE TABLE IF NOT EXISTS watchlist (
+                    symbol TEXT PRIMARY KEY, payload TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                PRAGMA user_version=2;
             """)
 
     @contextmanager
@@ -89,7 +94,7 @@ class Store:
                 ON CONFLICT(id) DO UPDATE SET body=excluded.body, summary=excluded.summary,
                     engine=excluded.engine, metadata=excluded.metadata""", {**r, "metadata": encode(r.get("metadata", {}))})
 
-    def reports(self, symbol=None, date=None):
+    def reports(self, symbol=None, date=None, symbols=None):
         clauses, args = [], []
         if symbol:
             clauses.append("symbol=?")
@@ -97,14 +102,45 @@ class Store:
         if date:
             clauses.append("report_date=?")
             args.append(date)
+        if symbols is not None:
+            if not symbols:
+                return []
+            clauses.append("symbol IN (" + ",".join("?" for _ in symbols) + ")")
+            args.extend(symbols)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self.connect() as db:
             rows = db.execute("SELECT * FROM reports" + where + " ORDER BY report_date DESC, created_at DESC LIMIT 400", args).fetchall()
         return [{**dict(r), "metadata": json.loads(r["metadata"])} for r in rows]
 
-    def dates(self):
+    def dates(self, symbols=None):
+        if symbols is not None and not symbols:
+            return []
+        where = " WHERE symbol IN (" + ",".join("?" for _ in symbols) + ")" if symbols is not None else ""
+        args = list(symbols) * 2 if symbols is not None else []
         with self.connect() as db:
-            return [r[0] for r in db.execute("SELECT report_date FROM reports UNION SELECT trade_date FROM snapshots ORDER BY 1 DESC")]
+            return [r[0] for r in db.execute("SELECT report_date FROM reports" + where + " UNION SELECT trade_date FROM snapshots" + where + " ORDER BY 1 DESC", args)]
+
+    def seed_watchlist(self, items):
+        with self.connect() as db:
+            first = db.execute("INSERT OR IGNORE INTO app_meta VALUES('watchlist_seeded','1')").rowcount
+            if first:
+                db.executemany("INSERT INTO watchlist VALUES(?,?,1,?)", [(item["symbol"], encode(item), i) for i, item in enumerate(items)])
+
+    def watchlist(self):
+        with self.connect() as db:
+            return [json.loads(r[0]) for r in db.execute("SELECT payload FROM watchlist WHERE active=1 ORDER BY position,symbol")]
+
+    def add_stock(self, item):
+        with self.connect() as db:
+            old = db.execute("SELECT payload FROM watchlist WHERE symbol=?", (item["symbol"],)).fetchone()
+            item = {**(json.loads(old[0]) if old else {}), **item}
+            db.execute("INSERT INTO watchlist VALUES(?,?,1,(SELECT COALESCE(MAX(position),-1)+1 FROM watchlist)) "
+                       "ON CONFLICT(symbol) DO UPDATE SET payload=excluded.payload,active=1", (item["symbol"], encode(item)))
+        return item
+
+    def remove_stock(self, symbol):
+        with self.connect() as db:
+            db.execute("UPDATE watchlist SET active=0 WHERE symbol=?", (symbol,))
 
     def set_status(self, symbol, state, message, now):
         with self.connect() as db:

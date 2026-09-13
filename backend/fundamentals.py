@@ -104,31 +104,6 @@ def fetch_hk_financials(symbol: str, max_periods: int = 4) -> Optional[dict]:
         return None
 
 
-def fetch_news(symbol: str, n: int = 5) -> Optional[list]:
-    """AKShare 个股新闻, 带来源字段."""
-    try:
-        import akshare as ak
-        df = ak.stock_news_em(symbol=symbol)
-        if df is None or df.empty:
-            return None
-        df = df.head(n)
-        items = []
-        for _, row in df.iterrows():
-            content = str(row.get("新闻内容", "")).strip()
-            if len(content) > 200:
-                content = content[:200] + "..."
-            items.append({
-                "title": str(row.get("新闻标题", "")).strip(),
-                "summary": content,
-                "time": str(row.get("发布时间", "")).strip(),
-                "source": str(row.get("文章来源", "")).strip(),
-                "url": str(row.get("新闻链接", "")).strip(),
-            })
-        return items
-    except Exception:
-        return None
-
-
 def fetch_hk_balance_cash(symbol: str) -> Optional[float]:
     """尝试拉最新一期"现金及现金等价物"余额(原始单位元), 用于亏损公司现金跑道估算."""
     try:
@@ -247,7 +222,6 @@ def fetch_fundamentals(symbol: str, configured_name: str = "", market="HK") -> d
         "company_name_from_source": fetch_hk_company_name(symbol),
         "configured_name": configured_name,
         "financials": financials,
-        "news": fetch_news(symbol),
         "next_earnings_date": fetch_next_earnings_date(symbol),
         "cash_runway": _compute_cash_runway(financials, cash),
     }

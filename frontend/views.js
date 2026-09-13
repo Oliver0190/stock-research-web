@@ -1,7 +1,8 @@
-import { escape as e, money, pct, direction, time, dateLabel, kindLabel, statusLabel, markdown, safeUrl } from './format.js';
+import { escape as e, money, pct, direction, time, dateLabel, kindLabel, statusLabel, markdown } from './format.js';
 import { chart } from './chart.js';
 import { indicatorPanels } from './indicators.js';
 import { marketInfo, stockCode, routeHref, draftKey } from './markets.js';
+import { newsPanel } from './news.js';
 
 const empty = (title, text) => `<div class="empty-state"><h3>${title}</h3><p>${text}</p></div>`;
 const badge = s => s ? `<span class="status-badge ${e(s.state)}">${e(statusLabel[s.state] || s.state)}</span>` : '<span class="status-badge">尚未更新</span>';
@@ -45,7 +46,7 @@ export function overview(data, state) {
       <div class="metric-card"><div class="metric-label">${state.day ? '所选日期' : '今日'}涨跌分布</div><div class="metric-value"><span class="up">${rising}</span><span class="metric-divider">/</span><span class="down">${falling}</span><small>只</small></div><div class="metric-note">上涨 / 下跌 · ${dated.length} 只当日有数据</div></div>
     </section>
     <div class="overview-grid"><section class="panel watchlist-panel"><div class="panel-heading"><div><h2>关注列表 <span class="count-label">${stocks.length}</span></h2></div><label class="search-box"><input id="stock-search" type="search" placeholder="名称 / 代码" aria-label="搜索自选股票" value="${e(state.search)}"></label></div>
-    <div class="table-toolbar"><div class="filter-group" aria-label="股票筛选">${[['all', '全部'], ['important', '重点'], ['unread', '未查看']].map(([v, l]) => `<button data-action="filter" data-value="${v}" class="filter ${state.filter === v ? 'selected' : ''}" aria-pressed="${state.filter === v}">${l}</button>`).join('')}</div><span class="subtle">${e(marketInfo(data).currency_label)} ${marketInfo(data).currency}</span></div>
+    <div class="table-toolbar"><div class="filter-group" aria-label="股票筛选">${[['all', '全部'], ['important', '重点'], ['unread', '未查看']].map(([v, l]) => `<button data-action="filter" data-value="${v}" class="filter ${state.filter === v ? 'selected' : ''}" aria-pressed="${state.filter === v}">${l}</button>`).join('')}</div><button class="text-button" data-action="manage-watchlist">＋ 管理股票</button><span class="subtle">${e(marketInfo(data).currency_label)} ${marketInfo(data).currency}</span></div>
     <div id="watch-table">${watchTable(data, state)}</div></section>
     <aside class="focus-column"><section class="panel focus-panel"><div class="panel-heading"><h2>观察要点</h2></div>${groupedEvents.length ? `<div class="focus-list">${groupedEvents.slice(0, 5).map(({ stock: s, report: r }, index) => `<a class="focus-item" href="${routeHref(marketInfo(data).id, 'stock', s.symbol)}"><span class="focus-number">${String(index + 1).padStart(2, '0')}</span><div class="focus-item-meta"><span>${e(s.name)}</span><small>${kindLabel[r.kind]}</small></div><h3>${e(r.summary)}</h3><div class="focus-item-footer"><span>数据 ${r.data_date}</span><span>详情 →</span></div></a>`).join('')}</div>` : empty('暂无重点事件', snapshots.length ? '可切换日期查看历史记录。' : '等待行情。')}</section>
     </aside></div>
@@ -78,7 +79,7 @@ export function detail(data, stock, state) {
       <section class="timeline-section"><div class="timeline-heading"><h2>研究记录 <span class="count-label">${stock.reports.length}</span></h2><span class="subtle">最新记录在前</span></div><div class="timeline-filters" aria-label="记录类型">${[['all', '全部记录'], ['morning', '盘前'], ['intraday', '盘中'], ['closing', '盘后']].map(([v, label]) => `<button class="filter ${state.kind === v ? 'selected' : ''}" data-action="kind" data-value="${v}" aria-pressed="${state.kind === v}">${label}</button>`).join('')}</div><div class="timeline">${timeline(stock, state)}</div></section></div>
       <aside class="profile-column"><section class="panel note-panel"><div class="panel-heading"><h2>观察笔记</h2></div><label class="sr-only" for="stock-note">${e(stock.name)}的观察笔记</label><textarea id="stock-note" maxlength="10000" placeholder="关注逻辑、待核实的问题…">${e(note)}</textarea><div class="note-footer"><span id="note-state">${state.drafts[draftKey(marketInfo(data).id, stock.symbol)] !== undefined ? '未保存' : stock.profile.updated_at ? `上次保存 ${time(stock.profile.updated_at)}` : '本地存储'}</span><button class="button secondary small-button" data-action="save-note" data-symbol="${stock.symbol}">保存笔记</button></div></section>
       <section class="panel technical-panel"><div class="panel-heading"><h2>技术状态</h2></div>${a ? `<div class="technical-row"><span>均线趋势</span><strong>${e(a.indicators.ma.arrangement.split('(')[0])}</strong></div><div class="technical-row"><span>MACD</span><strong>${e(a.indicators.macd.signal)}</strong></div><div class="technical-row"><span>布林带</span><strong>${e(a.indicators.boll.position)}</strong></div><div class="technical-row"><span>KDJ</span><strong>${e(a.indicators.kdj.signal)}</strong></div><div class="technical-footnote">基于 ${a.coverage.sessions} 个交易日<br>${a.coverage.start} 至 ${a.coverage.end}</div>` : '<p class="panel-empty">暂无技术数据</p>'}</section>
-      ${fundamentals(p?.fundamentals)}
+      ${fundamentals(p?.fundamentals, state)}
       <section class="method-note"><strong>口径说明</strong><p>区间由历史支撑推算，仅用于观察价格位置，不代表公司估值。</p></section></aside></div>`;
 }
 
@@ -93,8 +94,8 @@ function timeline(stock, state) {
   }).join('');
 }
 
-function fundamentals(fund) {
+function fundamentals(fund, state) {
   const financial = fund?.financials?.periods?.[0];
   const number = n => n == null ? '—' : Math.abs(n) >= 1e8 ? `${(n / 1e8).toFixed(2)} 亿` : `${(n / 1e4).toFixed(2)} 万`;
-  return `<section class="panel fundamental-panel"><div class="panel-heading"><h2>财报与新闻</h2></div>${financial ? `<div class="financial-period">${e(financial.report_date)} · ${e(financial.report_period_type)}</div><div class="technical-row"><span>营收</span><strong>${number(financial.revenue)}</strong></div><div class="technical-row"><span>${e(financial.net_profit_label || '净利润')}</span><strong>${number(financial.net_profit)}</strong></div><p class="financial-source">来源：${e(financial.source || '东方财富 / AKShare')} · ${financial.currency === 'CNY' ? '人民币，按万／亿显示' : '金额按源数据口径，币种尚未核验'}</p>` : '<p class="panel-empty">暂无财报数据</p>'}${fund?.next_earnings_date ? `<div class="earnings-date">下次财报预估 <strong>${e(fund.next_earnings_date)}</strong></div>` : ''}${fund?.news?.length ? `<div class="news-list">${fund.news.slice(0, 4).map(n => `<article class="news-item"><small>${e(n.time?.slice(0, 10))} · ${e(n.source || '来源未标注')}</small>${safeUrl(n.url) ? `<a href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">${e(n.title)} ↗</a>` : `<p>${e(n.title)}</p>`}</article>`).join('')}</div>` : '<div class="news-empty">暂无新闻记录</div>'}</section>`;
+  return `<section class="panel fundamental-panel"><div class="panel-heading"><h2>财报与新闻</h2></div>${financial ? `<div class="financial-period">${e(financial.report_date)} · ${e(financial.report_period_type)}</div><div class="technical-row"><span>营收</span><strong>${number(financial.revenue)}</strong></div><div class="technical-row"><span>${e(financial.net_profit_label || '净利润')}</span><strong>${number(financial.net_profit)}</strong></div><p class="financial-source">来源：${e(financial.source || '东方财富 / AKShare')} · ${financial.currency === 'CNY' ? '人民币，按万／亿显示' : '金额按源数据口径，币种尚未核验'}</p>` : '<p class="panel-empty">暂无财报数据</p>'}${fund?.next_earnings_date ? `<div class="earnings-date">下次财报预估 <strong>${e(fund.next_earnings_date)}</strong></div>` : ''}${newsPanel(fund, state.newsFilter, state.newsExpanded)}</section>`;
 }

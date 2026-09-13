@@ -6,6 +6,8 @@ import { overview, detail } from '../frontend/views.js';
 import { indicatorPlot, indicatorPanels } from '../frontend/indicators.js';
 import { parseRoute, draftKey } from '../frontend/markets.js';
 import { api } from '../frontend/api.js';
+import { newsPanel } from '../frontend/news.js';
+import { watchlistRows } from '../frontend/watchlist.js';
 
 test('remote content stays text; active URLs are rejected', () => {
   assert.equal(escape('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');
@@ -92,10 +94,37 @@ test('every A-share API request carries its market, with HK as the legacy defaul
     await api.refresh('002594','A');
     await api.note('002594','观察','A');
     await api.read('002594','2026-09-10T18:00:00+08:00',['test'],'A');
+    await api.watchlist('A');
+    await api.addStock('000001','A');
+    await api.removeStock('000001','A');
     assert.ok(calls.every(call=>call.url.includes('market=A')));
     assert.ok(calls[0].url.includes('day=2026-09-09'));
     assert.equal(JSON.parse(calls[3].options.body).note,'观察');
     await api.overview('');
     assert.ok(calls.at(-1).url.includes('market=HK'));
   } finally { globalThis.fetch=original; }
+});
+
+test('news filters prefer important items and keep routine buybacks accessible', () => {
+  const fund={news:[{title:'腾讯财报增长',category:'earnings',importance:'important',category_label:'财报业绩',url:'https://example.com/report'},
+    {title:'腾讯连续回购',category:'buyback',importance:'normal',category_label:'日常回购',related_count:8},
+    {title:'<script>unsafe</script>',category:'operations',importance:'important',url:'javascript:alert(1)'}]};
+  assert.ok(newsPanel(fund).includes('腾讯财报增长'));
+  assert.ok(!newsPanel(fund).includes('腾讯连续回购'));
+  assert.ok(newsPanel(fund,'all').includes('已合并 8 条'));
+  assert.ok(!newsPanel(fund,'earnings').includes('unsafe'));
+  assert.ok(newsPanel(fund).includes('&lt;script&gt;'));
+  assert.ok(!newsPanel(fund).includes('href="javascript:'));
+  assert.ok(newsPanel({news:[fund.news[1]]}).includes('暂无匹配的重要新闻'));
+});
+
+test('watchlist manager handles empty lists, escaped names and explicit removal', () => {
+  assert.ok(watchlistRows([],'A').includes('输入代码添加'));
+  const rows=[{symbol:'000001',name:'<平安银行>'}];
+  const normal=watchlistRows(rows,'A'), confirming=watchlistRows(rows,'A','000001');
+  assert.ok(normal.includes('&lt;平安银行&gt;'));
+  assert.ok(normal.includes('000001.SZ'));
+  assert.ok(!normal.includes('确认移除'));
+  assert.ok(confirming.includes('历史记录保留'));
+  assert.ok(confirming.includes('确认移除'));
 });
