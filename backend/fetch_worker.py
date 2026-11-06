@@ -12,7 +12,13 @@ def main():
     symbol, mode = sys.argv[1:3]
     market = sys.argv[4] if len(sys.argv) > 4 else "HK"
     with contextlib.redirect_stdout(sys.stderr):
-        if mode == "lookup":
+        if mode == "paper":
+            from backend.paper_data import execution_data
+            result = execution_data(symbol, market)
+        elif mode == "lots":
+            from backend.paper_data import board_lots
+            result = board_lots()
+        elif mode == "lookup":
             try:
                 result = resolve_stock(symbol, market)
             except ValueError as error:

@@ -8,6 +8,34 @@ import { parseRoute, draftKey } from '../frontend/markets.js';
 import { api } from '../frontend/api.js';
 import { newsPanel } from '../frontend/news.js';
 import { watchlistRows } from '../frontend/watchlist.js';
+import { paperView, evidenceView } from '../frontend/paper.js';
+
+test('paper account routing and requests retain the selected market', async () => {
+  assert.deepEqual(parseRoute('#A/paper'), {market:'A',route:'paper',symbol:null});
+  assert.deepEqual(parseRoute('#HK/paper'), {market:'HK',route:'paper',symbol:null});
+  const saved = globalThis.fetch, urls = [];
+  globalThis.fetch = async url => {urls.push(url); return {ok:true,json:async()=>({})};};
+  try {
+    await api.paper('A'); await api.paperControl(false,'A'); await api.paperRun('A'); await api.paperDecision('test','A');
+    assert.equal(urls.length,4);
+    assert.ok(urls.every(url=>url.endsWith('market=A')));
+  } finally {globalThis.fetch=saved;}
+});
+
+test('paper account shows independent cash and escapes model/evidence content', () => {
+  const account = {market:'A',currency:'CNY',enabled:false,equity_cents:10000000,cash_cents:10000000,
+    pnl_cents:0,return_pct:0,exposure_pct:0,max_drawdown_pct:0,positions:{},orders:[],reviews:[],decisions:[],equity:[],
+    message:'<img src=x onerror=alert(1)>',policy:{fee_bps:10,min_fee:5,slippage_bps:5,execution:'下一日',limitations:'模拟'}};
+  const html=paperView(account,{stocks:[]});
+  assert.ok(html.includes('CNY'));
+  assert.ok(html.includes('启动模拟'));
+  assert.ok(!html.includes('<img'));
+  assert.ok(!html.includes('NaN'));
+  assert.ok(paperView(account,{stocks:[]},'reviews').includes('还') || paperView(account,{stocks:[]},'reviews').includes('五个交易日'));
+  const evidence=evidenceView({created_at:'2026-11-02',plan:{summary:'<script>alert(1)</script>'},evidence:{note:'<img>'}});
+  assert.ok(!evidence.includes('<script>'));
+  assert.ok(evidence.includes('&lt;script&gt;'));
+});
 
 test('remote content stays text; active URLs are rejected', () => {
   assert.equal(escape('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');

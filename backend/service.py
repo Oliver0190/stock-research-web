@@ -28,7 +28,7 @@ def isolated_fetch(symbol, mode, argument, market="HK"):
     try:
         result = subprocess.run([sys.executable, "-m", "backend.fetch_worker", symbol, mode, str(argument), market],
                                 cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8",
-                                timeout=65 if mode == "market" else 12 if mode == "lookup" else 25)
+                                timeout=65 if mode in {"market", "paper"} else 12 if mode == "lookup" else 25)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError("数据源响应超时，可稍后重试") from e
     if mode == "lookup" and result.returncode:

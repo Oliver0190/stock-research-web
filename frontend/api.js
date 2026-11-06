@@ -11,6 +11,10 @@ export async function request(path, options = {}) {
 }
 
 export const api = {
+  paper: (market = 'HK') => request(`/paper?market=${market}`),
+  paperControl: (enabled, market = 'HK') => request(`/paper/control?market=${market}`, {method:'PUT', body:JSON.stringify({enabled})}),
+  paperRun: (market = 'HK') => request(`/paper/run?market=${market}`, {method:'POST', body:'{}'}),
+  paperDecision: (id, market = 'HK') => request(`/paper/decisions/${encodeURIComponent(id)}?market=${market}`),
   watchlist: (market = 'HK') => request(`/watchlist?market=${market}`),
   addStock: (symbol, market = 'HK') => request(`/watchlist?market=${market}`, { method:'POST', body:JSON.stringify({symbol}) }),
   removeStock: (symbol, market = 'HK') => request(`/watchlist/${symbol}?market=${market}`, { method:'DELETE', body:'{}' }),

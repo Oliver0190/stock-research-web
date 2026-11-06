@@ -3,10 +3,11 @@ import { escape as e } from './format.js';
 import { overview, detail, sidebar, watchTable } from './views.js';
 import { markets, draftKey, routeHref, parseRoute } from './markets.js';
 import { initWatchlist } from './watchlist.js';
+import { paperView, evidenceView } from './paper.js';
 
 const main = document.querySelector('#main');
 const state = { market:'HK', route: 'overview', symbol: null, day: '', filter: 'all', kind: 'all', search: '', range: 60, newsFilter:'important', newsExpanded:false, drafts: {}, openReports: new Set(), closedReports: new Set() };
-let data, stock, revision = 0, pollTimer, toastTimer;
+let data, stock, paper, paperTab = 'account', revision = 0, pollTimer, toastTimer;
 
 function toast(message, error = false) {
   const element = document.querySelector('#toast');
@@ -24,6 +25,7 @@ function renderNavigation() {
   document.querySelector('.brand').href = routeHref(state.market);
   document.querySelector('#market-switch').dataset.market = state.market;
   document.querySelectorAll('#market-switch a').forEach(a => {
+    a.href = routeHref(a.dataset.market, state.route === 'paper' ? 'paper' : 'overview');
     const selected = a.dataset.market === state.market;
     a.classList.toggle('active', selected);
     if (selected) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current');
@@ -35,8 +37,9 @@ function renderNavigation() {
     if (selected) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   document.querySelector('#market-status').textContent = `${data?.market.label || '载入中'} · ${info.timezone_label}`;
-  document.querySelector('#breadcrumb').innerHTML = `研究台 <span>/</span> ${info.name} <span>/</span> ${e(state.symbol ? stock?.name || '个股档案' : state.route === 'attention' ? '重点变化' : '今日总览')}`;
-  document.title = `${state.symbol && stock ? stock.name : state.route === 'attention' ? '重点变化' : '今日总览'} · ${info.name} · 市场观察`;
+  const title = state.symbol ? stock?.name || '个股档案' : state.route === 'paper' ? '模拟交易' : state.route === 'attention' ? '重点变化' : '今日总览';
+  document.querySelector('#breadcrumb').innerHTML = `研究台 <span>/</span> ${info.name} <span>/</span> ${e(title)}`;
+  document.title = `${title} · ${info.name} · 市场观察`;
 }
 
 function render() {
@@ -47,7 +50,7 @@ function render() {
   document.querySelector('#watch-count').textContent = data.stocks.length;
   document.querySelector('#attention-count').textContent = new Set(data.reports.filter(r => r.importance === 'important').map(r => r.symbol)).size || '';
   renderNavigation();
-  main.innerHTML = state.symbol && stock ? detail(data, stock, state) : overview(data, state);
+  main.innerHTML = state.route === 'paper' ? paperView(paper, data, paperTab) : state.symbol && stock ? detail(data, stock, state) : overview(data, state);
   if (selection) {
     const input = document.getElementById(focused);
     input?.focus({ preventScroll: true });
@@ -56,12 +59,16 @@ function render() {
 }
 
 async function load({ quiet = false, read = false } = {}) {
+  if (quiet && document.querySelector('#paper-evidence-dialog')?.open) {
+    pollTimer = setTimeout(() => load({quiet:true}), 5000);
+    return;
+  }
   const token = ++revision;
   const symbol = state.symbol, day = state.day, market = state.market;
   try {
-    const [nextData, nextStock] = await Promise.all([api.overview(day, market), symbol ? api.stock(symbol, day, market) : null]);
+    const [nextData, nextStock, nextPaper] = await Promise.all([api.overview(day, market), symbol ? api.stock(symbol, day, market) : null, state.route === 'paper' ? api.paper(market) : null]);
     if (token !== revision) return;
-    data = nextData; stock = nextStock;
+    data = nextData; stock = nextStock; paper = nextPaper;
     render();
     if (read && stock) {
       await api.read(stock.symbol, stock.retrieved_at, stock.reports.map(r => r.id), market);
@@ -77,7 +84,7 @@ async function load({ quiet = false, read = false } = {}) {
   } finally {
     if (token === revision) {
       clearTimeout(pollTimer);
-      pollTimer = setTimeout(() => load({ quiet: true }), data?.update.running ? 5000 : 30000);
+      pollTimer = setTimeout(() => load({ quiet: true }), data?.update.running || paper?.running ? 5000 : 30000);
     }
   }
 }
@@ -99,6 +106,7 @@ function route() {
   state.kind = 'all';
   state.newsFilter = 'important'; state.newsExpanded = false;
   stock = null;
+  paper = null;
   renderNavigation();
   load({ read: Boolean(state.symbol) });
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -116,9 +124,24 @@ main.addEventListener('click', async event => {
   if (action === 'news-filter') { state.newsFilter = value; state.newsExpanded = false; render(); return; }
   if (action === 'news-expand') { state.newsExpanded = !state.newsExpanded; render(); return; }
   if (action === 'retry') { load(); return; }
+  if (action === 'paper-tab') { paperTab = value; render(); return; }
+  if (action === 'paper-close') { document.querySelector('#paper-evidence-dialog')?.close(); return; }
   button.disabled = true;
   try {
-    if (action === 'refresh') {
+    if (action === 'paper-control') {
+      await api.paperControl(value === 'start', market);
+      if (state.market === market) await load();
+    } else if (action === 'paper-run') {
+      const result = await api.paperRun(market);
+      toast(result.started ? '正在更新账本与模拟方案' : '本轮正在运行');
+      if (state.market === market) await load();
+    } else if (action === 'paper-evidence') {
+      const record = await api.paperDecision(value, market);
+      if (state.market !== market || state.route !== 'paper') return;
+      const dialog = document.querySelector('#paper-evidence-dialog');
+      dialog.innerHTML = evidenceView(record);
+      dialog.showModal();
+    } else if (action === 'refresh') {
       const result = await api.refresh(symbol, market);
       toast(result.started ? '已开始更新' : '正在更新');
       if (state.market === market) await load();

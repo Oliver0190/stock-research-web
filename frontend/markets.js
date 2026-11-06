@@ -18,6 +18,6 @@ export function parseRoute(hash, fallback = 'HK') {
     }
     return { market, route:'overview', symbol:null };
   }
-  const page = /^(?:(HK|A)\/)?(overview|attention)$/.exec(path);
+  const page = /^(?:(HK|A)\/)?(overview|attention|paper)$/.exec(path);
   return { market:page?.[1] || fallback, route:page?.[2] || 'overview', symbol:null };
 }
