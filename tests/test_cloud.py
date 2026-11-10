@@ -1,0 +1,103 @@
+import json
+import tempfile
+import unittest
+from datetime import datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
+
+from backend.cloud_client import CloudError, CloudPaper
+from backend.cloud_job import export_book, read, restore_book, run_market, watch_items, write
+from backend.live_quotes import parse_quotes
+from backend.market import HK
+from backend.paper import PaperService
+from backend.paper_live import live_tick
+from backend.service import ResearchService
+from backend.store import Store, encode
+
+
+class CloudTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.paper = self.paper_at('first.db')
+
+    def paper_at(self, name):
+        r = ResearchService(Store(self.root / name), {'market':'A','watchlist':[],'llm':{'model':'test'}})
+        self.addCleanup(r.close)
+        return PaperService(r)
+
+    def test_durable_roundtrip_excludes_research_notes_and_preserves_history(self):
+        key = 'a'*32
+        self.paper.store.save_note('000001','DO_NOT_EXPORT','now')
+        with self.paper.transaction() as (s, db):
+            s['cash_cents'] -= 1234
+            db.execute('INSERT INTO paper_decisions VALUES(?,?,?,?)',(key,'2026-11-09','complete',encode({'id':key,'session':'2026-11-09','plan':{'actions':[]},'trace':[]})))
+        folder = self.root / 'state' / 'A'
+        with self.paper.store.connect() as db:
+            export_book(db, folder, 'A')
+        write(folder/'watchlist.json',[])
+        self.assertTrue(run_market(self.root/'state','A','verify'))
+        restored = self.paper_at('second.db')
+        restore_book(folder, restored)
+        self.assertEqual(restored.snapshot()['cash_cents'], 10_000_000-1234)
+        self.assertEqual(restored.decision(key)['status'],'complete')
+        self.assertFalse(any('DO_NOT_EXPORT' in p.read_text(encoding='utf-8') for p in folder.rglob('*.json')))
+
+    def test_missing_or_wrong_market_does_not_reset_account(self):
+        with self.assertRaises(FileNotFoundError):
+            restore_book(self.root/'lost',self.paper)
+        folder=self.root/'A'
+        with self.paper.store.connect() as db:
+            export_book(db, folder,'A')
+        manifest=read(folder/'account.json'); manifest['account']['currency']='HKD'; write(folder/'account.json',manifest)
+        with self.assertRaises(ValueError):
+            restore_book(folder,self.paper)
+
+    def test_cloud_unavailable_never_starts_local_account(self):
+        cloud=CloudPaper('owner/private-journal','A',self.root)
+        with patch.object(cloud,'call',side_effect=CloudError('offline')):
+            with self.assertRaises(CloudError): cloud.snapshot()
+        cloud.dir.mkdir(parents=True)
+        write(cloud.dir/'view.json',{'market':'A','cloud_updated_at':'2026-11-09'})
+        with patch.object(cloud,'call',side_effect=CloudError('offline')):
+            self.assertTrue(cloud.snapshot()['cloud_stale'])
+            with self.assertRaises(CloudError): cloud.dispatch('start')
+
+    def test_watchlist_only_exports_names_and_matching_codes(self):
+        self.assertEqual(watch_items([{'symbol':'00700','name':'腾讯','note':'private'}],'HK'), [{'symbol':'00700','name':'腾讯'}])
+        with self.assertRaises(ValueError):watch_items([{'symbol':'00700','name':'wrong'}],'A')
+
+    def test_live_quote_must_match_symbol_and_have_a_recent_timestamp(self):
+        now=datetime(2026,11,10,10,0,30,tzinfo=HK)
+        fields=['0']*78;fields[75]='HKD'
+        for i,v in {1:'样本',2:'00700',3:'101',4:'100',6:'5000',30:'2026/11/10 10:00:12'}.items(): fields[i]=v
+        keys={'r_hk00700':'00700'}
+        def parse(): return parse_quotes('v_r_hk00700="'+'~'.join(fields)+'";',keys,now)
+        self.assertEqual(parse()['00700']['price'],101)
+        fields[30]='2026/11/10 09:45:12';self.assertFalse(parse())
+        fields[30]='2026/11/10 10:00:40';self.assertFalse(parse())
+        fields[30]='2026/11/10 10:00:10';fields[2]='00001';self.assertFalse(parse())
+
+    def test_live_decision_needs_later_quote_and_new_volume_and_does_not_run_at_lunch(self):
+        p=self.paper
+        now=[datetime(2026,11,10,10,0,tzinfo=HK)]
+        p.clock=lambda:now[0]
+        sym='000001';p.research.items[sym]={'name':'样本','symbol':sym}
+        p.store.put_snapshot(sym,{'data_date':'2026-11-09','complete':True},now[0].isoformat())
+        p.enable(True,start_worker=False)
+        calls=[]
+        def agent(context,evidence,model):
+            calls.append(context)
+            return {'model':model,'trace':[],'plan':{'summary':'合成报价用于验证模拟撮合', 'actions':[{'symbol':sym,'side':'buy','quantity':100,
+                'reason':'仅用于验证交易决策和后续报价的时间顺序','invalidation':'后续报价偏离则放弃本次模拟'}]}}
+        p.agent=agent
+        volume=[1000];at=[now[0]]
+        def quotes(*args):return {sym:{'name':'样本','price':10,'at':at[0].isoformat(),'volume':volume[0],'change_pct':1}}
+        def tick():return live_tick(p,lots={sym:100},checked={sym},quote_fetch=quotes)
+        self.assertEqual(tick(),'decided');self.assertEqual(p.snapshot()['orders'][0]['status'],'pending')
+        now[0]+=timedelta(minutes=1);tick();self.assertEqual(p.snapshot()['orders'][0]['status'],'pending')
+        at[0]=now[0];tick();self.assertEqual(p.snapshot()['orders'][0]['status'],'pending')
+        volume[0]=1100;tick();self.assertEqual(p.snapshot()['orders'][0]['status'],'filled')
+        self.assertEqual(len(calls),1)
+        now[0]=now[0].replace(hour=12,minute=20);self.assertEqual(tick(),'closed')

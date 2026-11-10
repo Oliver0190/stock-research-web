@@ -132,7 +132,7 @@ class ResearchService:
             if pending and not self.stop_event.is_set():
                 self.start(pending, queue=True)
 
-    def refresh_one(self, item, context=None):
+    def refresh_one(self, item, context=None, *, write_ai_report=True):
         ctx = context or market_context(market=self.market)
         item = {**item, **instrument(item["symbol"], self.market)}
         now, symbol = ctx["now"], item["symbol"]
@@ -205,7 +205,7 @@ class ResearchService:
         if latest_date == ctx["today"] and ctx["phase"] in {"intraday", "break", "settling"} and not stale:
             observation["fundamentals"] = fund
             self.store.put_snapshot(symbol, observation, now)
-        if not prior_report or prior_report["engine"] != "ai":
+        if write_ai_report and (not prior_report or prior_report["engine"] != "ai"):
             body, engine, ai_issue = reports.compose(kind, item, baseline, changes, self.config["llm"]["model"], fund)
             self.store.put_report({**report, "body": body, "engine": engine,
                                    "metadata": {**report["metadata"], "ai_issue": ai_issue}})

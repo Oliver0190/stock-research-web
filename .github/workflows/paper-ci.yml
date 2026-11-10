@@ -1,0 +1,19 @@
+name: Verify paper trading container
+on:
+  push:
+    branches: [main]
+    paths: ['backend/**','frontend/**','tests/**','Dockerfile','compose.yaml','requirements.lock.txt','.github/workflows/paper-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: docker build -t paper-ci .
+      - run: docker run --rm --network none -v "$PWD/tests:/app/tests:ro" paper-ci python -m unittest discover -s tests -q
+      - run: node tests/frontend.test.mjs

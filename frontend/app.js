@@ -129,12 +129,16 @@ main.addEventListener('click', async event => {
   button.disabled = true;
   try {
     if (action === 'paper-control') {
-      await api.paperControl(value === 'start', market);
+      const result = await api.paperControl(value === 'start', market);
+      if (result.queued) toast('已提交 GitHub，任务完成后账本会更新。');
       if (state.market === market) await load();
     } else if (action === 'paper-run') {
       const result = await api.paperRun(market);
-      toast(result.started ? '正在更新账本与模拟方案' : '本轮正在运行');
+      toast(result.queued ? '已提交 GitHub，任务完成后账本会更新。' : result.started ? '正在更新账本与模拟方案' : '本轮正在运行');
       if (state.market === market) await load();
+    } else if (action === 'paper-sync') {
+      await api.paperSync(market);
+      toast('已提交自选列表同步，任务完成后生效。');
     } else if (action === 'paper-evidence') {
       const record = await api.paperDecision(value, market);
       if (state.market !== market || state.route !== 'paper') return;

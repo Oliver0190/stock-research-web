@@ -6,7 +6,7 @@ once its daily bar is available. Corporate actions fail closed in this first ver
 """
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from functools import partial
 import json
@@ -80,13 +80,17 @@ def validate_action(action, account, available, market):
 
 
 class PaperService:
-    def __init__(self, research, fetcher=None, agent=None, clock=None):
+    def __init__(self, research, fetcher=None, agent=None, clock=None, *, mode=None):
         self.research, self.store, self.market = research, research.store, research.market
         self.fetcher = fetcher or partial(isolated_fetch, market=self.market)
         self.agent = agent or propose
         self.clock = clock or (lambda: datetime.now(research.tz))
         self.lock, self.stop = threading.Lock(), threading.Event()
         self.running = False
+        self.live_sessions = None
+        if (mode or os.environ.get('STOCK_AGENT_PAPER_MODE')) == 'intraday':
+            from backend.paper_live import LiveSessions
+            self.live_sessions = LiveSessions(self)
         now = self.clock().isoformat(timespec="seconds")
         initial = {"market": self.market, "currency": research.info["currency"], "initial_cents": INITIAL,
                    "cash_cents": INITIAL, "enabled": False, "generation": 0, "created_at": now,
@@ -128,8 +132,11 @@ class PaperService:
         for decision in decisions:
             decision.pop("evidence", None)
             decision["trace"] = [{k: t.get(k) for k in ("tool", "symbol")} for t in decision.get("trace", [])]
-        return {**state, "orders": state["orders"][-100:], "reviews": state["reviews"][-100:],
-                "decisions": decisions, "running": self.running, "policy": policy(self.market),
+        rules=policy(self.market)
+        if self.live_sessions:
+            rules.update(version='paper-live-v1',execution='交易时段每分钟轮询。等决策后的新报价和新增成交量，五分钟未满足条件则到期。')
+        return {**state, 'intraday': self.live_sessions is not None, "orders": state["orders"][-100:], "reviews": state["reviews"][-100:],
+                "decisions": decisions, "running": self.running, "policy": rules,
                 "ai_available": bool(os.environ.get("DEEPSEEK_API_KEY")), "equity_cents": equity,
                 "pnl_cents": equity - INITIAL, "return_pct": (equity / INITIAL - 1) * 100,
                 "exposure_pct": exposure / equity * 100 if equity > 0 else 0, "max_drawdown_pct": drawdown}
@@ -139,18 +146,20 @@ class PaperService:
             row = db.execute("SELECT * FROM paper_decisions WHERE id=?", (identifier,)).fetchone()
         return {**json.loads(row["payload"]), "status": row["status"]} if row else None
 
-    def enable(self, enabled):
+    def enable(self, enabled, *, start_worker=True):
         with self.transaction() as (state, _):
             if enabled and state["blocked"]:
                 raise ValueError("账本存在公司行动待核对，请先处理记录中的问题")
             state["enabled"] = enabled
             state["generation"] += 1
             state["message"] = "已启动，等待收盘数据和研究资料。" if enabled else "已暂停决策，未成交订单已取消；仍可更新持仓估值。"
+            if enabled and self.live_sessions:
+                state['message']='盘中模拟已启动，将在本市场开市时检查新报价。'
             if not enabled:
                 for order in state["orders"]:
                     if order["status"] == "pending":
                         order.update(status="cancelled", result="用户暂停模拟账户")
-        if enabled:
+        if enabled and start_worker:
             self.start()
 
     def start(self):
@@ -177,7 +186,11 @@ class PaperService:
             try:
                 ctx = market_context(self.clock(), self.market)
                 slot = (ctx["today"], self.clock().hour, self.clock().minute // 10)
-                if ctx["phase"] in {"closing", "holiday"} and slot != attempted and self.snapshot()["enabled"]:
+                phases={'closing','holiday'}
+                if self.live_sessions:
+                    phases={'intraday','closing'}
+                    slot=(ctx['today'],self.clock().hour,self.clock().minute)
+                if ctx["phase"] in phases and slot != attempted and self.snapshot()["enabled"]:
                     attempted = slot
                     self.start()
             except Exception:
@@ -189,6 +202,8 @@ class PaperService:
 
     def cycle(self):
         ctx = market_context(self.clock(), self.market)
+        if self.live_sessions is not None:
+            return self.live_sessions.tick(ctx)
         if ctx["phase"] not in {"closing", "holiday"}:
             with self.transaction() as (state, _):
                 state["message"] = "等待收盘数据。第一版每天收盘后决策，不做盘中撮合。"
@@ -283,19 +298,20 @@ class PaperService:
                 db.execute("UPDATE paper_decisions SET status='error',payload=? WHERE id=?", (encode(record), identifier))
                 state["message"] = record["error"]
 
-    def commit_plan(self, record, evidence, generation):
+    def commit_plan(self, record, evidence, generation, *, live=False):
         # Decide the next open after the model FINISHES, never backdate to a passed opening.
         now = self.clock()
         cal = calendar(self.market)
         next_day = cal.date_to_session(now.date().isoformat(), direction="next")
         if cal.session_open(next_day).to_pydatetime() <= now:
             next_day = cal.next_session(next_day)
-        eligible = next_day.date().isoformat()
+        eligible = now.date().isoformat() if live else next_day.date().isoformat()
         with self.transaction() as (state, db):
             existing = db.execute("SELECT status FROM paper_decisions WHERE id=?", (record["id"],)).fetchone()
             if not existing or existing[0] != "running":
                 return
-            if self.stop.is_set() or not state["enabled"] or state["generation"] != generation:
+            if (self.stop.is_set() or not state["enabled"] or state["generation"] != generation or
+                (live and (market_context(now, self.market)['phase'] != 'intraday' or record['session'] != eligible))):
                 db.execute("UPDATE paper_decisions SET status='cancelled',payload=? WHERE id=?", (encode(record), record["id"]))
                 return
             # Reserve against a shadow account, so a batch cannot overcommit cash/exposure.
@@ -303,11 +319,19 @@ class PaperService:
             for action in record["plan"]["actions"]:
                 symbol, qty = action["symbol"], action["quantity"]
                 error = validate_action(action, shadow, evidence, self.market)
+                if live and any(o['status']=='pending' for o in state['orders'] if o['symbol']==symbol):
+                    error = '该股票已有待成交订单'
                 detail = evidence.get(symbol, {})
+                if live and detail.get('quote_at') and (now-datetime.fromisoformat(detail['quote_at'])).total_seconds()>90:
+                    error='模型完成时参考报价已过期，本次不下单'
                 order = {**action, "id": uuid.uuid4().hex, "decision_id": record["id"], "created_at": now.isoformat(),
                          "eligible_session": eligible, "name": detail.get("name", symbol),
                          "reference": detail.get("raw_close"), "lot": detail.get("lot", 0),
                          "status": "rejected" if error else "pending", "result": error or "等待下一交易日开盘日线"}
+                if live:
+                    order.update(execution='intraday', expires_at=(now+timedelta(minutes=5)).isoformat(),
+                                 reference_volume=detail.get('quote_volume',0),
+                                 result=error or '等待决策完成后的新报价')
                 state["orders"].append(order)
                 if not error:
                     value = cents(Decimal(str(detail["raw_close"])) * qty)
@@ -318,6 +342,8 @@ class PaperService:
                     # Do not pre-spend expected sell proceeds before a sale actually fills.
             db.execute("UPDATE paper_decisions SET status='complete',payload=? WHERE id=?", (encode(record), record["id"]))
             state["message"] = "本轮方案已保存，等待下一交易日。" if record["plan"]["actions"] else "本轮选择继续观察，已保存判断依据。"
+            if live and record['plan']['actions']:
+                state['message'] = '盘中方案已保存，合规订单等待后续新报价。'
 
     def settle(self, quotes, through):
         with self.transaction() as (state, db):
@@ -334,7 +360,10 @@ class PaperService:
             lookup = {s: {r["date"]: r for r in q["rows"]} for s, q in quotes.items()}
             for session in days:
                 day = session.date().isoformat()
-                pending = [o for o in state["orders"] if o["status"] == "pending" and o["eligible_session"] <= day]
+                for o in state['orders']:
+                    if o['status']=='pending' and o.get('execution')=='intraday' and o['eligible_session']<=day:
+                        o.update(status='expired', result='盘中有效期已过，不以日线补成交')
+                pending = [o for o in state["orders"] if o["status"] == "pending" and o["eligible_session"] <= day and o.get('execution')!='intraday']
                 # Do not fabricate marks for missing/suspended holdings or skip missing action history.
                 if any(day not in lookup.get(s, {}) for s in state["positions"]):
                     state["message"] = f"{day} 持仓行情不完整，估值停留在上次成功日期。"
@@ -386,8 +415,10 @@ class PaperService:
         available = {symbol: {"tradable": True, "raw_close": float(price), "lot": order["lot"]}}
         error = validate_action(order, state, available, self.market)
         position = state["positions"].get(symbol)
-        if side == "sell" and self.market == "A" and position and position["opened_on"] >= day:
-            error = "A 股当日新买入持仓不能卖出"
+        if side == "sell" and self.market == "A" and position:
+            locked = position.get('locked_quantity', 0) if position.get('locked_on') == day else 0
+            if position['opened_on'] == day or qty > position['quantity'] - locked:
+                error = "A 股当日新买入持仓不能卖出"
         if error:
             order.update(status="rejected", result=error)
             return
@@ -397,6 +428,9 @@ class PaperService:
             position = state["positions"].setdefault(symbol, {"name": order["name"], "quantity": 0,
                 "cost_cents": 0, "opened_on": day, "mark_price": row["open"], "mark_date": day})
             position["quantity"] += qty
+            if self.market == 'A':
+                position['locked_quantity'] = (position.get('locked_quantity',0) if position.get('locked_on')==day else 0) + qty
+                position['locked_on'] = day
             position["cost_cents"] += value + costs
         else:
             allocated = position["cost_cents"] if qty == position["quantity"] else round(position["cost_cents"] * qty / position["quantity"])

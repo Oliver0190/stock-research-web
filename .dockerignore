@@ -1,0 +1,12 @@
+**
+!Dockerfile
+!requirements.lock.txt
+!config.yaml
+!config.a.yaml
+!backend/
+!backend/*.py
+!frontend/
+!frontend/*.js
+!frontend/*.css
+!frontend/*.svg
+!frontend/*.html

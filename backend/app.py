@@ -14,6 +14,7 @@ from backend.service import ResearchService
 from backend.settings import ROOT, load_config, database_path
 from backend.store import Store
 from backend.paper import PaperService
+from backend.cloud_client import CloudError, CloudPaper, configured_cloud
 
 Market = Literal["HK", "A"]
 
@@ -40,29 +41,35 @@ class PaperControlRequest(BaseModel):
 
 
 def create_app(service=None, schedule=True, services=None):
+    cloud_repo = configured_cloud() if service is None and services is None else None
     if service is None and services is None and database_path("HK").resolve() == database_path("A").resolve():
         raise ValueError("港股与 A 股数据库必须使用不同文件")
     services = services or ({"HK": service} if service is not None else {
         market: ResearchService(Store(database_path(market)), load_config(market)) for market in ("HK", "A")
     })
-    papers = {market: PaperService(research) for market, research in services.items()}
+    papers = {market: CloudPaper(cloud_repo, market) if cloud_repo else PaperService(research) for market, research in services.items()}
 
     @asynccontextmanager
     async def lifespan(app):
         for market, research in services.items():
-            if schedule:
+            if schedule and not cloud_repo:
                 threading.Thread(target=papers[market].scheduler, daemon=True, name=f"paper-scheduler-{market}").start()
             if schedule and research.auto_refresh:
                 threading.Thread(target=research.scheduler, daemon=True, name=f"stock-scheduler-{market}").start()
         yield
-        for paper in papers.values():
-            paper.close()
+        if not cloud_repo:
+            for paper in papers.values():
+                paper.close()
         for research in services.values():
             research.close()
 
     app = FastAPI(title="市场观察", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.services = services
     app.state.papers = papers
+
+    @app.exception_handler(CloudError)
+    async def cloud_error(request, error):
+        return JSONResponse({'detail': str(error)}, status_code=503)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
 
     @app.middleware("http")
@@ -114,6 +121,8 @@ def create_app(service=None, schedule=True, services=None):
     @app.put("/api/paper/control")
     def paper_control(body: PaperControlRequest, market: Market = "HK"):
         selected(market)
+        if cloud_repo:
+            return papers[market].dispatch('start' if body.enabled else 'pause')
         try:
             papers[market].enable(body.enabled)
         except ValueError as error:
@@ -123,7 +132,16 @@ def create_app(service=None, schedule=True, services=None):
     @app.post("/api/paper/run", status_code=202)
     def paper_run(market: Market = "HK"):
         selected(market)
+        if cloud_repo:
+            return papers[market].dispatch('run')
         return {"started": papers[market].start()}
+
+    @app.post('/api/paper/sync-watchlist', status_code=202)
+    def sync_cloud_watchlist(market: Market = 'HK'):
+        research = selected(market)
+        if not cloud_repo:
+            raise HTTPException(409, '当前使用本机账本')
+        return papers[market].dispatch('sync', list(research.watch_items().values()))
 
     @app.get("/api/overview")
     def overview(day: date | None = None, market: Market = "HK"):

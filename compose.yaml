@@ -1,0 +1,13 @@
+services:
+  research:
+    build: .
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:8765:8765'
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      STOCK_AGENT_PAPER_MODE: intraday
+    volumes:
+      - journal:/app/data
+volumes:
+  journal:
