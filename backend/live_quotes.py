@@ -37,7 +37,7 @@ def parse_quotes(text, requested, now, *, max_age=90):
     return found
 
 
-def fetch_quotes(symbols, market, now):
+def fetch_quotes(symbols, market, now, *, max_age=90):
     started = time.monotonic()
     keys = {('r_hk' if market == 'HK' else instrument(s, market)['exchange'].lower())+s:s for s in symbols}
     found = {}
@@ -46,5 +46,5 @@ def fetch_quotes(symbols, market, now):
         r = requests.get('https://qt.gtimg.cn/q='+','.join(batch), timeout=7)
         r.raise_for_status()
         received = now + timedelta(seconds=time.monotonic() - started)
-        found.update(parse_quotes(r.content.decode('gbk',errors='replace'), keys, received))
+        found.update(parse_quotes(r.content.decode('gbk',errors='replace'), keys, received, max_age=max_age))
     return found

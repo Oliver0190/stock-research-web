@@ -11,6 +11,7 @@ import time
 import pandas as pd
 
 from backend.cloud_job import export_book, read, restore_book, watch_items, write
+from backend.live_quotes import fetch_quotes
 from backend.market import calendar, instrument, market_context
 from backend.paper import PaperService
 from backend.service import ResearchService
@@ -141,6 +142,21 @@ def changes(view):
             view['cash_cents'], view['enabled'], view['blocked'], view['generation'])
 
 
+def verify_sources(paper, cached, ctx):
+    # Closed-market quotes are diagnostic only. Trading always uses the default 90-second limit.
+    samples = list(cached)[:3]
+    if not samples:
+        return not paper.research.watch_items()
+    quotes = fetch_quotes(samples, paper.market, paper.clock(), max_age=14*86400)
+    raw = paper.live_sessions.raw(samples)
+    lots = paper.fetcher('', 'lots', '')['lots'] if paper.market == 'HK' else dict.fromkeys(samples, 100)
+    usable = [symbol for symbol in samples if symbol in raw and symbol in quotes and lots.get(symbol)
+              and any(row['date'] == ctx['expected_session'] for row in raw[symbol]['rows'])
+              and quotes[symbol]['at'][:10] >= ctx['expected_session']]
+    print(f'{paper.market} feed probe: quotes={len(quotes)}, history={len(raw)}, usable={len(usable)}/{len(samples)}', flush=True)
+    return bool(usable)
+
+
 def run_market(journal, market, window, temp):
     folder = journal.root / 'state' / market
     initial = journal.control(market)
@@ -166,6 +182,8 @@ def run_market(journal, market, window, temp):
                 return
             cached = prepare_research(paper, ctx, folder)
             result = paper.live_sessions.tick(ctx) if window == 'close' else 'checked'
+            if window == 'check' and not verify_sources(paper, cached, ctx):
+                result = 'incomplete'
             journal.save(paper, '收盘已记账' if result in {'settled','already-complete'} else
                          '云端已连接，等待交易时段' if result == 'checked' else result, cached)
             print(f'{market} research {len(cached)}/{len(config["watchlist"])}; {result}', flush=True)
