@@ -106,7 +106,11 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
         eligible={sym:q for sym,q in quotes.items() if sym in checked and sym in lots and lots[sym]>0}
         if not eligible:
             s['message']='暂无通过行情与交易单位校验的股票。';return 'no-tradable'
-        trigger=not live['last_attempt'] or any(abs(q['price']/live['baseline'].get(sym,q['price'])-1)>=.02 for sym,q in eligible.items())
+        if live['last_attempt']:
+            trigger = any(abs(q['price'] / live['baseline'].get(sym, q['price']) - 1) >= .02
+                          for sym, q in eligible.items())
+        else:
+            trigger = any(abs(q['change_pct']) >= 2 for q in eligible.values())
         if (not trigger or live['attempts']>=3 or (live['last_attempt'] and
                 (now-datetime.fromisoformat(live['last_attempt'])).total_seconds()<1800)):
             return 'observed'

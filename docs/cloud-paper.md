@@ -2,6 +2,16 @@
 
 网站代码在 `Oliver0190/stock-research-web`。不要将 `.env`、数据库或 `data/` 提交到公开仓库。这里有两种不同的运行方式；同一账户只选一个执行端。
 
+## GitHub 盘中模拟实验
+
+公开网站仓库的 `paper-sessions.yml` 使用标准 Linux 运行器。北京时间工作日 09:13 和 12:43 启动上午和下午的任务，预留安装和读取研究资料的时间。交易所开市后每市场约每分钟采样一次，16:47 的任务按各自日历做收盘估值和次日研究准备。GitHub 排队、行情源以及模型响应会影响实际采样间隔。漏过的报价不会补做成交。
+
+首轮信号取相对昨收的涨跌幅，阈值为 2%。后续相对上一轮决策时的报价比较，同样以 2% 为阈值。每市场每天最多三轮，相隔至少 30 分钟。只有较决策更新、成交量增加且符合时效和仓位约束的报价才能模拟成交。
+
+账户记录在私有 `stock-paper-runtime`，以只对这个私库有效的 SSH 部署密钥读写。模型密钥与部署密钥放在网站仓库的 Actions Secrets。关注列表、原始决策和资金记录只写入私库。每次订单变化及大约五分钟一次的状态会提交到账本。午休、收市和节假日由两地日历判断。
+
+首次安装在本机执行 `python -m ops.paper_admin install-sessions`，配置部署密钥与模型 Secret，然后启用仓库变量 `PAPER_SESSIONS_ENABLED=true`。手动运行一次 `check`，确认两个账本都成功更新后执行 `python -m ops.paper_admin link-sessions` 并重启本机网站。网站的启动、暂停和自选同步写入私库 `control/A.json` 或 `control/HK.json`，运行中的任务在下一次检查控制文件时生效。两市场共用一个任务锁。私库的 `state/A` 和 `state/HK` 可直接在手机上查看。
+
 ## 盘中：常驻进程
 
 `compose.yaml` 在持续在线的 Linux 主机上运行一份原网站，设置 `STOCK_AGENT_PAPER_MODE=intraday`，用一个持久 Docker 卷保存 A 股与港股的独立 SQLite。公开仓库的 `Verify paper trading container` 工作流只构建镜像和用合成数据测试，不代表生产交易已启动。

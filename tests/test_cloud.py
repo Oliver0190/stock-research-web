@@ -11,6 +11,7 @@ from backend.live_quotes import parse_quotes
 from backend.market import HK
 from backend.paper import PaperService
 from backend.paper_live import live_tick
+from backend.cloud_sessions import session_window, apply_control
 from backend.service import ResearchService
 from backend.store import Store, encode
 
@@ -68,6 +69,20 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(watch_items([{'symbol':'00700','name':'腾讯','note':'private'}],'HK'), [{'symbol':'00700','name':'腾讯'}])
         with self.assertRaises(ValueError):watch_items([{'symbol':'00700','name':'wrong'}],'A')
 
+    def test_separate_sessions_and_persistent_pause(self):
+        now = datetime(2026,11,10,10,30,tzinfo=HK)
+        self.assertEqual(session_window(now,'HK','morning')[1].astimezone(HK).hour, 12)
+        self.assertEqual(session_window(now,'A','morning')[1].astimezone(HK).strftime('%H:%M'), '11:30')
+        self.assertEqual(session_window(now,'HK','afternoon')[0].astimezone(HK).hour, 13)
+        self.assertIsNone(session_window(now.replace(day=15),'A','morning'))
+        controls = {'enabled':True,'watchlist':[{'symbol':'000001','name':'样本'}]}
+        apply_control(self.paper,controls)
+        generation = self.paper.snapshot()['generation']
+        apply_control(self.paper,controls)
+        self.assertEqual(self.paper.snapshot()['generation'],generation)
+        apply_control(self.paper,{**controls,'enabled':False})
+        self.assertFalse(self.paper.snapshot()['enabled'])
+
     def test_live_quote_must_match_symbol_and_have_a_recent_timestamp(self):
         now=datetime(2026,11,10,10,0,30,tzinfo=HK)
         fields=['0']*78;fields[75]='HKD'
@@ -93,8 +108,11 @@ class CloudTests(unittest.TestCase):
                 'reason':'仅用于验证交易决策和后续报价的时间顺序','invalidation':'后续报价偏离则放弃本次模拟'}]}}
         p.agent=agent
         volume=[1000];at=[now[0]]
-        def quotes(*args):return {sym:{'name':'样本','price':10,'at':at[0].isoformat(),'volume':volume[0],'change_pct':1}}
+        change=[1]
+        def quotes(*args):return {sym:{'name':'样本','price':10,'at':at[0].isoformat(),'volume':volume[0],'change_pct':change[0]}}
         def tick():return live_tick(p,lots={sym:100},checked={sym},quote_fetch=quotes)
+        self.assertEqual(tick(),'observed');self.assertFalse(calls)
+        change[0]=2.5
         self.assertEqual(tick(),'decided');self.assertEqual(p.snapshot()['orders'][0]['status'],'pending')
         now[0]+=timedelta(minutes=1);tick();self.assertEqual(p.snapshot()['orders'][0]['status'],'pending')
         at[0]=now[0];tick();self.assertEqual(p.snapshot()['orders'][0]['status'],'pending')

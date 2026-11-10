@@ -1,5 +1,6 @@
 """Authenticated, local-only reader and dispatcher for the private paper runner."""
 import json
+import base64
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,7 @@ import requests
 from backend.settings import ROOT
 
 MARKER = ROOT / 'data' / 'paper-cloud.json'
+SESSION_REPO = 'Oliver0190/stock-research-web'
 
 
 class CloudError(RuntimeError):
@@ -36,19 +38,23 @@ def github_session():
 
 
 class CloudPaper:
-    def __init__(self, repo, market, cache_dir=None):
+    def __init__(self, repo, market, cache_dir=None, *, sessions=False):
         if not re.fullmatch(r'[A-Za-z0-9_-]+/[A-Za-z0-9_-]+',repo) or market not in {'HK','A'}:
             raise ValueError('Invalid cloud account configuration')
         self.repo, self.market = repo, market
         self.url = f'https://github.com/{repo}/actions/workflows/paper.yml'
+        self.sessions = sessions
+        if sessions:
+            self.url = f'https://github.com/{SESSION_REPO}/actions/workflows/paper-sessions.yml'
         self.dir = (cache_dir or ROOT / 'data' / 'cloud-view') / repo.replace('/','_') / market
         self.lock = threading.Lock()
         self.updated = 0
 
-    def call(self, method, path, *, raw=False, **kwargs):
+    def call(self, method, path, *, raw=False, code_repo=False, **kwargs):
         try:
             with github_session() as s:
-                r = s.request(method, f'https://api.github.com/repos/{self.repo}/{path}', timeout=(3, 8), allow_redirects=False,
+                repo = SESSION_REPO if code_repo else self.repo
+                r = s.request(method, f'https://api.github.com/repos/{repo}/{path}', timeout=(3, 8), allow_redirects=False,
                     headers={'Accept':'application/vnd.github.raw+json' if raw else 'application/vnd.github+json'}, **kwargs)
                 if r.status_code not in {200,201,204}:
                     raise CloudError(f'GitHub 返回 {r.status_code}，请检查私有仓库访问或任务权限。')
@@ -85,6 +91,24 @@ class CloudPaper:
     def dispatch(self, operation, items=None):
         if operation not in {'run','start','pause','sync'}:
             raise ValueError('Invalid operation')
+        if self.sessions:
+            if operation != 'run':
+                path = f'contents/control/{self.market}.json'
+                previous = self.call('GET', path)
+                control = json.loads(base64.b64decode(previous['content']))
+                if operation == 'sync':
+                    from backend.cloud_job import watch_items
+                    control['watchlist'] = watch_items(items, self.market)
+                else:
+                    control['enabled'] = operation == 'start'
+                payload = base64.b64encode(json.dumps(control, ensure_ascii=False).encode()).decode()
+                self.call('PUT', path, json={'message': f'Update {self.market} paper settings',
+                          'content':payload, 'sha':previous['sha'], 'branch':'main'})
+            if operation in {'run','start'}:
+                self.call('POST','actions/workflows/paper-sessions.yml/dispatches', code_repo=True,
+                          json={'ref':'main','inputs':{'window':'auto'}})
+            self.updated = 0
+            return {'started':True,'queued':True,'cloud':True}
         inputs = {'operation':operation, 'market':self.market}
         if items is not None:
             from backend.cloud_job import watch_items
@@ -98,4 +122,5 @@ def configured_cloud():
     if not MARKER.exists():
         return None
     # Fail closed on malformed configuration: never start a local writer as fallback.
-    return json.loads(MARKER.read_text(encoding='utf-8'))['repository']
+    config = json.loads(MARKER.read_text(encoding='utf-8'))
+    return config['repository'], config.get('mode') == 'sessions'

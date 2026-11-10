@@ -1,7 +1,8 @@
 """Timestamped intraday observations. A polling interval is not a vendor freshness guarantee."""
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 import re
+import time
 
 import requests
 
@@ -37,11 +38,13 @@ def parse_quotes(text, requested, now, *, max_age=90):
 
 
 def fetch_quotes(symbols, market, now):
+    started = time.monotonic()
     keys = {('r_hk' if market == 'HK' else instrument(s, market)['exchange'].lower())+s:s for s in symbols}
     found = {}
     for start in range(0,len(keys),50):
         batch = list(keys)[start:start+50]
         r = requests.get('https://qt.gtimg.cn/q='+','.join(batch), timeout=7)
         r.raise_for_status()
-        found.update(parse_quotes(r.content.decode('gbk',errors='replace'), keys, now))
+        received = now + timedelta(seconds=time.monotonic() - started)
+        found.update(parse_quotes(r.content.decode('gbk',errors='replace'), keys, received))
     return found

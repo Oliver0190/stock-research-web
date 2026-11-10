@@ -25,7 +25,7 @@ def private(s):
         raise ValueError('Expected owner-administered private runtime repo')
 
 
-def install(s):
+def install(s, *, sessions=False):
     sha = subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     remote = checked(s.get(f'{API}/repos/{APP}/git/ref/heads/main',timeout=12),200)['object']['sha']
     if sha != remote or not re.fullmatch('[0-9a-f]{40}', sha):
@@ -42,32 +42,43 @@ def install(s):
     for market in ('A','HK'):
         seed(target/'state', market)
         run_market(target/'state', market, 'verify')
-    (target/'.github/workflows').mkdir(parents=True)
-    workflow = (ROOT/'ops/paper-workflow.yml').read_text(encoding='utf-8').replace('__APPLICATION_SHA__',sha)
-    (target/'.github/workflows/paper.yml').write_text(workflow,encoding='utf-8')
-    (target/'README.md').write_text(f'# 模拟交易 · 私有账本\n\n[A 股账户](state/A) · [港股账户](state/HK) · [运行与暂停](https://github.com/{RUNTIME}/actions/workflows/paper.yml)\n\n'
-        f'应用代码固定为 [{sha[:7]}](https://github.com/{APP}/commit/{sha})。此仓库存储虚拟账本，请保持私有。\n',encoding='utf-8')
+    if sessions:
+        from backend.cloud_job import read
+        for market in ('A','HK'):
+            write(target/'control'/f'{market}.json', {'enabled':True,
+                'watchlist':read(target/'state'/market/'watchlist.json')})
+        workflow_files = ['control']
+        workflow_url = f'https://github.com/{APP}/actions/workflows/paper-sessions.yml'
+    else:
+        (target/'.github/workflows').mkdir(parents=True)
+        workflow = (ROOT/'ops/paper-workflow.yml').read_text(encoding='utf-8').replace('__APPLICATION_SHA__',sha)
+        (target/'.github/workflows/paper.yml').write_text(workflow,encoding='utf-8')
+        workflow_files = ['.github/workflows/paper.yml']
+        workflow_url = f'https://github.com/{RUNTIME}/actions/workflows/paper.yml'
+    (target/'README.md').write_text(f'# 模拟交易 · 私有账本\n\n[A 股账户](state/A) · [港股账户](state/HK) · [任务记录]({workflow_url})\n\n'
+        f'[网站代码](https://github.com/{APP}) · 此仓库存储虚拟账本，请保持私有。\n',encoding='utf-8')
     checked(s.post(f'{API}/user/repos',json={'name':RUNTIME.split('/')[1], 'private':True,'auto_init':False,
         'description':'Private paper-trading journal for stock-research-web','has_issues':False,'has_projects':False,'has_wiki':False}, timeout=15),201)
     private(s)
-    for args in (['init','-b','main'],['add','--','.github/workflows/paper.yml','state','README.md'],
+    for args in (['init','-b','main'],['add','--',*workflow_files,'state','README.md'],
                  ['commit','-m','Initialize private paper journal'],['remote','add','origin',f'https://github.com/{RUNTIME}.git'],
                  ['push','-u','origin','main']):
         subprocess.run(['git',*args], cwd=target, check=True)
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('action',choices=['install','link','verify','start','pause','run','status']);p.add_argument('--market',choices=['both','A','HK'],default='both');args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('action',choices=['install','install-sessions','link','link-sessions','verify','start','pause','run','status']);p.add_argument('--market',choices=['both','A','HK'],default='both');args=p.parse_args()
     with github_session() as s:
-        if args.action=='install':
-            return install(s)
+        if args.action in {'install','install-sessions'}:
+            return install(s, sessions=args.action=='install-sessions')
         private(s)
-        if args.action=='link':
+        if args.action in {'link','link-sessions'}:
+            sessions = args.action == 'link-sessions'
             for m in ('A','HK'):
                 obj=CloudPaper(RUNTIME,m).snapshot()
-                if obj['cloud_stale'] or obj['market']!=m:
+                if obj['cloud_stale'] or obj['market']!=m or (sessions and obj.get('cloud_mode')!='sessions'):
                     raise ValueError('Cannot link to an unverified journal')
-            write(MARKER,{'repository':RUNTIME}); print('Cloud linked. Restart the local website.');return
+            write(MARKER,{'repository':RUNTIME,'mode':'sessions' if sessions else 'daily'}); print('Cloud linked. Restart the local website.');return
         if args.action=='status':
             runs=checked(s.get(f'{API}/repos/{RUNTIME}/actions/workflows/paper.yml/runs',params={'per_page':3},timeout=12),200)
             for r in runs['workflow_runs']: print(r['id'],r['status'],r['conclusion'],r['html_url'])

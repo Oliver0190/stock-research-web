@@ -47,7 +47,7 @@ def create_app(service=None, schedule=True, services=None):
     services = services or ({"HK": service} if service is not None else {
         market: ResearchService(Store(database_path(market)), load_config(market)) for market in ("HK", "A")
     })
-    papers = {market: CloudPaper(cloud_repo, market) if cloud_repo else PaperService(research) for market, research in services.items()}
+    papers = {market: CloudPaper(cloud_repo[0], market, sessions=cloud_repo[1]) if cloud_repo else PaperService(research) for market, research in services.items()}
 
     @asynccontextmanager
     async def lifespan(app):
