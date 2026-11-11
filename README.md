@@ -4,7 +4,9 @@
 
 ## 启动
 
-需要 Python 3.12。已经有 `.venv` 时，在项目目录运行：
+Windows 已安装项目依赖时，双击 **打开网站.cmd** 即可在默认浏览器打开网站。本机服务会在需要时自动启动。
+
+需要 Python 3.12。已经有 `.venv` 时，也可以在项目目录运行：
 
 ```powershell
 .venv/Scripts/python.exe -m backend

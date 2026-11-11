@@ -11,7 +11,7 @@ from backend.live_quotes import parse_quotes
 from backend.market import HK
 from backend.paper import PaperService
 from backend.paper_live import live_tick
-from backend.cloud_sessions import session_window, apply_control
+from backend.cloud_sessions import session_window, apply_control, observe_outside_trading
 from backend.service import ResearchService
 from backend.store import Store, encode
 
@@ -72,7 +72,15 @@ class CloudTests(unittest.TestCase):
     def test_separate_sessions_and_persistent_pause(self):
         now = datetime(2026,11,10,10,30,tzinfo=HK)
         self.assertEqual(session_window(now,'HK','morning')[1].astimezone(HK).hour, 12)
-        self.assertEqual(session_window(now,'A','morning')[1].astimezone(HK).strftime('%H:%M'), '11:30')
+        for market, window, expected in (
+            ('A', 'morning', ('09:00', '12:00')), ('A', 'afternoon', ('13:00', '15:30')),
+            ('HK', 'morning', ('09:30', '12:00')), ('HK', 'afternoon', ('13:00', '16:00')),
+        ):
+            bounds = session_window(now, market, window)
+            self.assertEqual(tuple(t.astimezone(HK).strftime('%H:%M') for t in bounds), expected)
+        half_day = datetime(2026,12,24,10,tzinfo=HK)
+        self.assertIsNone(session_window(half_day,'HK','afternoon'))
+        self.assertEqual(session_window(half_day,'HK','morning')[1].astimezone(HK).hour,12)
         self.assertEqual(session_window(now,'HK','afternoon')[0].astimezone(HK).hour, 13)
         self.assertIsNone(session_window(now.replace(day=15),'A','morning'))
         controls = {'enabled':True,'watchlist':[{'symbol':'000001','name':'样本'}]}
@@ -82,6 +90,17 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.paper.snapshot()['generation'],generation)
         apply_control(self.paper,{**controls,'enabled':False})
         self.assertFalse(self.paper.snapshot()['enabled'])
+
+    def test_a_observation_outside_trading_leaves_the_account_untouched(self):
+        from backend.market import market_context
+        for hour, minute, label in [(9, 15, '盘前'), (11, 45, '午间'), (15, 15, '盘后')]:
+            now = datetime(2026, 11, 10, hour, minute, tzinfo=HK)
+            self.paper.clock = lambda: now
+            before = self.paper.snapshot()
+            with patch('backend.cloud_sessions.fetch_quotes', return_value={}) as fetch:
+                self.assertIn(label, observe_outside_trading(self.paper, market_context(now, 'A')))
+                fetch.assert_called_once()
+            self.assertEqual(self.paper.snapshot(), before)
 
     def test_live_quote_must_match_symbol_and_have_a_recent_timestamp(self):
         now=datetime(2026,11,10,10,0,30,tzinfo=HK)

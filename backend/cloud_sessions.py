@@ -12,7 +12,7 @@ import pandas as pd
 
 from backend.cloud_job import export_book, read, restore_book, watch_items, write
 from backend.live_quotes import fetch_quotes
-from backend.market import calendar, instrument, market_context
+from backend.market import HK, calendar, instrument, market_context
 from backend.paper import PaperService
 from backend.service import ResearchService
 from backend.settings import load_config
@@ -20,20 +20,30 @@ from backend.store import Store
 
 
 def session_window(now, market, window):
-    """Return the actual exchange window. Holidays and half days have no phantom session."""
+    """Watch windows in exchange time. market_context separately gates trading."""
     cal = calendar(market)
-    day = now.date().isoformat()
+    day = now.astimezone(HK).date().isoformat()
     if not cal.is_session(day):
         return None
     opening = cal.session_open(day).to_pydatetime()
     close = cal.session_close(day).to_pydatetime()
     lunch = cal.session_break_start(day)
+    extra = timedelta(minutes=30 if market == 'A' else 0)
     if window == 'morning':
-        return opening, lunch.to_pydatetime() if pd.notna(lunch) else close
+        return opening - extra, lunch.to_pydatetime() + extra if pd.notna(lunch) else close
     afternoon = cal.session_break_end(day)
     if window == 'afternoon' and pd.notna(afternoon):
-        return afternoon.to_pydatetime(), close
+        return afternoon.to_pydatetime(), close + extra
     return None
+
+
+def observe_outside_trading(paper, ctx):
+    """Sample during the requested shoulders without passing quotes to the order engine."""
+    symbols = set(paper.research.watch_items()) | set(paper.snapshot()['positions'])
+    now = paper.clock()
+    quotes = fetch_quotes(sorted(symbols), paper.market, now)
+    label = {'morning': '盘前观察', 'break': '午间观察', 'settling': '盘后观察'}.get(ctx['phase'], ctx['label'])
+    return f'{label} · {len(quotes)}/{len(symbols)} 只有新报价'
 
 
 class Journal:
@@ -53,7 +63,7 @@ class Journal:
                 self.last_pull = time.monotonic()
             return read(self.root / 'control' / f'{market}.json')
 
-    def save(self, paper, status, research_cache=None):
+    def save(self, paper, status, research_cache=None, *, sampled_at=None):
         market = paper.market
         folder = self.root / 'state' / market
         with self.lock:
@@ -66,7 +76,7 @@ class Journal:
             now = paper.clock().isoformat(timespec='seconds')
             items = watch_items(list(paper.research.watch_items().values()), market)
             write(folder / 'watchlist.json', items)
-            view.update(cloud_status=status, cloud_updated_at=now, cloud_watch_count=len(items),
+            view.update(cloud_status=status, cloud_updated_at=now, cloud_sampled_at=sampled_at, cloud_watch_count=len(items),
                         cloud_mode='sessions')
             write(folder / 'view.json', view)
             latest = next((d for d in view['decisions'] if d.get('plan')), None)
@@ -174,7 +184,7 @@ def run_market(journal, market, window, temp):
         if window == 'auto':
             window = 'morning' if now.hour < 12 else 'afternoon'
             interval = session_window(now, market, window)
-            if not interval or not interval[0]-timedelta(minutes=25) <= now < interval[1]:
+            if not interval or not interval[0]-timedelta(hours=2) <= now < interval[1]:
                 window = 'check'
         if window in {'check','close'}:
             if window == 'close' and ctx['phase'] != 'closing':
@@ -191,11 +201,11 @@ def run_market(journal, market, window, temp):
                 raise RuntimeError('Market data incomplete')
             return
         interval = session_window(now, market, window)
-        if not interval or now >= interval[1] or now < interval[0]-timedelta(minutes=30):
+        if not interval or now >= interval[1] or now < interval[0]-timedelta(hours=2):
             return
         cached = prepare_research(paper, ctx, folder)
         journal.save(paper, '盘中任务已就绪', cached)
-        last_save = time.monotonic()
+        last_save = float('-inf')
         retry = time.monotonic() + 600
         previous = changes(paper.snapshot())
         while paper.clock() < interval[1]:
@@ -205,19 +215,33 @@ def run_market(journal, market, window, temp):
             if not paper.snapshot()['enabled']:
                 journal.save(paper, '已暂停')
                 return
-            ctx = market_context(paper.clock(), market)
-            if ctx['phase'] == 'intraday':
-                if started >= retry and set(research.watch_items()) - cached.keys():
-                    cached = prepare_research(paper, ctx, folder)
-                    retry = time.monotonic() + 600
-                try:
+            now = paper.clock()
+            if now < interval[0]:
+                time.sleep(min(60, (interval[0] - now).total_seconds()))
+                continue
+            if now >= interval[1]:
+                break
+            ctx = market_context(now, market)
+            if started >= retry and set(research.watch_items()) - cached.keys():
+                cached = prepare_research(paper, ctx, folder)
+                retry = time.monotonic() + 600
+                continue  # Recheck time after network calls.
+            sampled_at = None
+            try:
+                if ctx['phase'] == 'intraday':
                     result = paper.live_sessions.tick(ctx)
-                except (RuntimeError, ValueError, OSError):
-                    result = '行情源暂不可用'
-                current = changes(paper.snapshot())
-                if current != previous or started - last_save >= 300:
-                    journal.save(paper, result)
-                    last_save, previous = started, current
+                    observed = (paper.snapshot().get('live') or {}).get('observed_at')
+                    if observed and datetime.fromisoformat(observed) >= now:
+                        sampled_at = observed
+                else:
+                    result = observe_outside_trading(paper, ctx)
+                    sampled_at = now.isoformat(timespec='seconds')
+            except (RuntimeError, ValueError, OSError):
+                result = '行情源暂不可用'
+            current = changes(paper.snapshot())
+            if current != previous or started - last_save >= 300:
+                journal.save(paper, result, sampled_at=sampled_at)
+                last_save, previous = started, current
             remaining = (interval[1] - paper.clock()).total_seconds()
             time.sleep(max(0, min(remaining, 60 - (time.monotonic()-started))))
         journal.save(paper, '本交易时段结束')

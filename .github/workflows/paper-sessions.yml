@@ -1,15 +1,19 @@
 name: 盘中模拟实验
 on:
   schedule:
-    - cron: '13 1 * * 1-5'
-    - cron: '43 4 * * 1-5'
+    # UTC+8: 08:07, 08:47 and 09:43 for the morning window.
+    - cron: '7,47 0 * * 1-5'
+    - cron: '43 1 * * 1-5'
+    # UTC+8: 12:07, 12:47 and 13:43 for the afternoon window.
+    - cron: '7,47 4 * * 1-5'
+    - cron: '43 5 * * 1-5'
     - cron: '47 8 * * 1-5'
   workflow_dispatch:
     inputs:
       window:
         description: 'auto 按当前交易时段运行，check 验证连接和研究资料'
         type: choice
-        options: [auto, check, close]
+        options: [auto, morning, afternoon, check, close]
         default: auto
 permissions:
   contents: read
@@ -20,7 +24,7 @@ jobs:
   session:
     if: github.repository == 'Oliver0190/stock-research-web' && github.ref == 'refs/heads/main' && !github.event.repository.private && vars.PAPER_SESSIONS_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 225
+    timeout-minutes: 270
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -38,7 +42,7 @@ jobs:
       - name: Run session and checkpoint the private journal
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          WINDOW: ${{ inputs.window || (github.event.schedule == '13 1 * * 1-5' && 'morning') || (github.event.schedule == '43 4 * * 1-5' && 'afternoon') || 'close' }}
+          WINDOW: ${{ inputs.window || (github.event.schedule == '47 8 * * 1-5' && 'close') || ((github.event.schedule == '7,47 0 * * 1-5' || github.event.schedule == '43 1 * * 1-5') && 'morning') || 'afternoon' }}
         run: |
           if [ -z "$DEEPSEEK_API_KEY" ]; then echo "::error::Missing model secret"; exit 1; fi
           python -m backend.cloud_sessions "$WINDOW" journal

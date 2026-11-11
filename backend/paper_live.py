@@ -71,6 +71,9 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
     items = paper.research.watch_items()
     symbols = set(items) | set(state['positions'])
     quotes = quote_fetch(sorted(symbols),market,now)
+    # A request started before the break or close can return after the session ends.
+    if market_context(paper.clock(), market)['phase'] != 'intraday':
+        return 'closed'
     day = ctx['today']
     with paper.transaction() as (s,db):
         if not s['enabled'] or s['generation'] != state['generation']:
