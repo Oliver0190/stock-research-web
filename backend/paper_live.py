@@ -9,6 +9,7 @@ from backend.market import market_context
 from backend.paper import policy
 from backend.paper_agent import Plan, propose
 from backend.store import encode
+from backend.paper_watch import affordable_symbols, update_watch_prices, pending_symbols
 from backend.prices import normalize_frame
 
 
@@ -38,16 +39,22 @@ class LiveSessions:
         snapshot=p.snapshot()
         if snapshot['blocked']:return 'blocked'
         symbols=set(p.research.watch_items())|set(snapshot['positions'])|{o['symbol'] for o in snapshot['orders'] if o['status']=='pending'}
+        through = ctx['expected_session']
         if ctx['phase']=='closing':
-            if snapshot['last_session']==ctx['expected_session']:return 'already-complete'
-            return 'settled' if p.settle(self.raw(symbols),ctx['expected_session']) else 'incomplete'
+            due = pending_symbols(snapshot, through)
+            if snapshot['last_session']==through and not due:return 'already-complete'
+            raw = self.raw(symbols | due)
+            update_watch_prices(p, raw, through)
+            return 'settled' if p.settle(raw,through) else 'incomplete'
         if ctx['phase']!='intraday' or not snapshot['enabled']:return 'closed'
         key=(ctx['today'],tuple(sorted(symbols)))
         if self.ready!=key:
-            raw=self.raw(symbols)
+            raw=self.raw(symbols | pending_symbols(snapshot, through))
+            update_watch_prices(p, raw, through)
             if not p.settle(raw,ctx['expected_session']):return 'incomplete'
             self.checked=set()
-            for s,v in raw.items():
+            for s in symbols.intersection(raw):
+                v = raw[s]
                 previous=[r for r in v['rows'] if r['date']<=ctx['expected_session']]
                 today=next((r for r in v['rows'] if r['date']==ctx['today']),None)
                 if len(previous)<30 or previous[-1]['date']!=ctx['expected_session']:continue
@@ -109,7 +116,7 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
         eligible={sym:q for sym,q in quotes.items() if sym in checked and sym in lots and lots[sym]>0}
         if not eligible:
             s['message']='暂无通过行情与交易单位校验的股票。';return 'no-tradable'
-        if live['last_attempt']:
+        if live['baseline']:
             trigger = any(abs(q['price'] / live['baseline'].get(sym, q['price']) - 1) >= .02
                           for sym, q in eligible.items())
         else:
@@ -117,9 +124,10 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
         if (not trigger or live['attempts']>=3 or (live['last_attempt'] and
                 (now-datetime.fromisoformat(live['last_attempt'])).total_seconds()<1800)):
             return 'observed'
+        if db.execute("SELECT 1 FROM paper_decisions WHERE session=? AND status='running'", (day,)).fetchone():
+            return 'observed'
         if paper.agent is propose and not os.environ.get('DEEPSEEK_API_KEY'):
             s['message']='盘中监测已运行，缺少模型密钥，无法生成交易方案。';return 'missing-model-secret'
-        live['attempts']+=1;live['last_attempt']=now.isoformat();live['baseline']={sym:q['price'] for sym,q in eligible.items()}
         data={}
         for sym,q in eligible.items():
             saved=paper.store.snapshot(sym,ctx['expected_session']) or {}
@@ -131,8 +139,10 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
                 'quote_at':q['at'],'quote_volume':q['volume'],'quote_change_pct':q['change_pct'],'price_source':'腾讯证券 · 盘中报价',
                 'research_date':saved['data_date'],'analysis':saved.get('analysis'),'news':((saved.get('fundamentals') or {}).get('news') or [])[:6]}
         if not data:
-            live['attempts']-=1;live['last_attempt']=None
             s['message']='盘中报价已更新，等待上一交易日的已完成研究资料。';return 'no-research'
+        live['last_attempt'] = now.isoformat()
+        baseline = {sym: q['price'] for sym, q in eligible.items()}
+        affordable = affordable_symbols(s, data, market) - {sym for sym, q in eligible.items() if q.get('at_limit')}
         record={'id':uuid.uuid4().hex,'session':day,'created_at':now.isoformat(),'version':'paper-live-v1',
                 'execution':'intraday','trace':[],'evidence':data,'plan':None}
         db.execute('INSERT INTO paper_decisions VALUES(?,?,?,?)',(record['id'],day,'running',encode(record)))
@@ -146,10 +156,10 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
         plan=Plan.model_validate(answer['plan']).model_dump()
         if len(set(a['symbol'] for a in plan['actions']))!=len(plan['actions']):raise ValueError('重复股票')
         record.update(plan=plan,trace=answer['trace'],model=answer['model'])
-        paper.commit_plan(record,data,generation,live=True)
+        paper.commit_plan(record,data,generation,live=True,baseline=baseline,affordable=affordable)
         return 'decided'
-    except Exception:
-        record['error']='本轮盘中模型方案未完成，没有生成订单。'
+    except Exception as exc:
+        record['error']=f'本轮盘中方案未完成（{type(exc).__name__}），没有生成订单，不占决策次数。'
         with paper.transaction() as (s,db):
             db.execute("UPDATE paper_decisions SET status='error',payload=? WHERE id=? AND status='running'",(encode(record),record['id']))
             s['message']=record['error']

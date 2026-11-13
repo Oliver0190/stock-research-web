@@ -14,6 +14,22 @@ const stockLink = (market, symbol, name, active) => active.has(symbol)
   ? `<a href="${routeHref(market, 'stock', symbol)}">${e(name || symbol)} <small>${e(symbol)} ↗</small></a>`
   : `<span>${e(name || symbol)} <small>${e(symbol)} · 已移出关注列表</small></span>`;
 
+function watchReview(review, market, active) {
+  const horizons = ['1', '3', '5'];
+  const rows = review.stocks.map(stock => {
+    const cells = horizons.map(h => {
+      const point = stock.outcomes[h];
+      if (point?.status === 'priced') {
+        return `<td class="${direction(point.change_pct)}">${pct(point.change_pct)}<small>收盘 ${money(point.close)}</small></td>`;
+      }
+      const label = point?.status === 'corporate-action' ? '分红或拆股' : point?.status === 'missing' ? '行情待补' : '待收盘核验';
+      return `<td>${label}</td>`;
+    }).join('');
+    return `<tr><td>${stockLink(market,stock.symbol,stock.name,active)}</td><td>${money(stock.reference)}<small>一手 ${e(stock.lot)} 股</small></td>${cells}</tr>`;
+  }).join('');
+  return `<article class="paper-entry"><div class="paper-entry-meta"><span>${e(review.session)} · ${e(time(review.created_at))}</span><span>${review.stocks.length} 只</span></div><h3>本轮观望</h3><p>${e(review.summary)}</p><div class="paper-table-wrap"><table class="paper-table"><thead><tr><th>股票</th><th>决策参考价</th>${horizons.map(h => `<th>第 ${h} 日<small>${e(review.targets[h])}</small></th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div><button class="text-button" data-action="paper-evidence" data-value="${e(review.decision_id)}">回看当时依据 ↗</button></article>`;
+}
+
 export function paperView(account, data, tab = 'account') {
   if (!account) return blank('载入模拟账户', '正在读取本地账本。');
   const market = account.market, info = markets[market], p = account.policy;
@@ -32,13 +48,15 @@ export function paperView(account, data, tab = 'account') {
   const tabs = [['account','账户'],['decisions','决策日志'],['orders','模拟成交'],['reviews','复盘']];
   let content;
   if (tab === 'decisions') {
-    content = decisions.length ? decisions.map(d => `<article class="paper-entry"><div class="paper-entry-meta"><span>${e(d.session)} · ${e(statuses[d.status] || d.status)}</span><span>${e(d.model || '—')} / ${e(d.version)}</span></div><h3>${d.plan?.actions.length ? `${d.plan.actions.length} 项交易提议` : d.plan ? '继续观察' : '本轮记录'}</h3><p>${e(d.plan?.summary || d.error || '正在读取资料；中断的运行不会自动下单。')}</p>${(d.plan?.actions || []).map(a => `<div class="paper-thesis"><strong>${a.side === 'buy' ? '买入' : '卖出'} ${e(a.symbol)} · ${a.quantity} 股</strong><p>${e(a.reason)}</p><small>验证条件 · ${e(a.invalidation)}</small></div>`).join('')}<div class="paper-entry-meta"><span>${e(time(d.created_at))} · 读取 ${d.trace?.length || 0} 次个股资料</span><button class="text-button" data-action="paper-evidence" data-value="${e(d.id)}">查看原始依据 ↗</button></div></article>`).join('')
+    content = decisions.length ? decisions.map(d => `<article class="paper-entry"><div class="paper-entry-meta"><span>${e(d.session)} · ${e(account.intraday && d.status === 'error' ? '未完成 · 不计入有效轮次' : statuses[d.status] || d.status)}</span><span>${e(d.model || '—')} / ${e(d.version)}</span></div><h3>${d.plan?.actions.length ? `${d.plan.actions.length} 项交易提议` : d.plan ? '继续观察' : '本轮记录'}</h3><p>${e(d.plan?.summary || d.error || '正在读取资料；中断的运行不会自动下单。')}</p>${(d.plan?.actions || []).map(a => `<div class="paper-thesis"><strong>${a.side === 'buy' ? '买入' : '卖出'} ${e(a.symbol)} · ${a.quantity} 股</strong><p>${e(a.reason)}</p><small>验证条件 · ${e(a.invalidation)}</small></div>`).join('')}<div class="paper-entry-meta"><span>${e(time(d.created_at))} · 读取 ${d.trace?.length || 0} 次个股资料</span><button class="text-button" data-action="paper-evidence" data-value="${e(d.id)}">查看原始依据 ↗</button></div></article>`).join('')
       : blank('从第一份判断开始', '启动后，Agent 会读取资料并记录交易或继续观察的理由。没有模型密钥时会明确提示。');
   } else if (tab === 'orders') {
     content = orders.length ? `<div class="paper-table-wrap"><table class="paper-table"><thead><tr><th>股票 / 方向</th><th>数量</th><th>计划日期</th><th>成交价</th><th>费用</th><th>结果</th></tr></thead><tbody>${orders.map(o => `<tr><td>${stockLink(market,o.symbol,o.name,active)}<small>${o.side === 'buy' ? '买入' : '卖出'}</small></td><td>${o.quantity}</td><td>${e(o.eligible_session)}</td><td>${o.fill_price ? money(o.fill_price) : '—'}</td><td>${o.fee_cents != null ? amount(o.fee_cents) : '—'}</td><td><strong>${e(statuses[o.status])}</strong><small>${e(o.result)}</small></td></tr>`).join('')}</tbody></table></div>`
       : blank('还没有订单', account.intraday ? '决策后须等到新的有效报价才能模拟成交。' : '决策会先保存，最早在下一交易日模拟成交。未通过检查的提议也会保留。');
   } else if (tab === 'reviews') {
-    content = `<p class="paper-intro">每笔卖出与每轮决策后的第五个交易日留下复盘。先记录事实，再验证原因；待验证建议不会直接改动策略。</p>${reviews.length ? reviews.map(r => `<article class="paper-entry"><div class="paper-entry-meta"><span>${e(r.date)} · ${e(r.status)}</span><span>${e(r.symbol || '')}</span></div><h3>${e(r.title)}</h3><p>${e(r.body)}</p><div class="paper-thesis"><small>下一步验证</small><p>${e(r.suggestion)}</p></div><button class="text-button" data-action="paper-evidence" data-value="${e(r.decision_id)}">回看当时依据 ↗</button></article>`).join('') : blank('让判断留下可比较的记录', '产生交易或积累五个交易日后，这里会出现复盘。亏损本身不会被当成错误原因。')}`;
+    const watches = [...(account.watch_reviews || [])].reverse();
+    const watchSection = account.intraday ? `<section><h2>观望股票后续表现</h2><p class="paper-intro">按每轮已查阅、可买一手且未提议交易的股票，比较第 1、3、5 个交易日收盘与当时参考价的涨跌。价格变化未扣交易成本。</p>${watches.length ? watches.map(w => watchReview(w, market, active)).join('') : blank('暂无符合条件的观望记录', '完成决策后，符合条件的股票会出现在这里。')}</section><h2>交易与决策复盘</h2>` : '';
+    content = `${watchSection}<p class="paper-intro">每笔卖出与每轮决策后的第五个交易日留下复盘。先记录事实，再验证原因；待验证建议不会直接改动策略。</p>${reviews.length ? reviews.map(r => `<article class="paper-entry"><div class="paper-entry-meta"><span>${e(r.date)} · ${e(r.status)}</span><span>${e(r.symbol || '')}</span></div><h3>${e(r.title)}</h3><p>${e(r.body)}</p><div class="paper-thesis"><small>下一步验证</small><p>${e(r.suggestion)}</p></div><button class="text-button" data-action="paper-evidence" data-value="${e(r.decision_id)}">回看当时依据 ↗</button></article>`).join('') : blank('让判断留下可比较的记录', '产生交易或积累五个交易日后，这里会出现复盘。亏损本身不会被当成错误原因。')}`;
   } else {
     const positions = Object.entries(account.positions);
     content = `<div class="paper-account-grid"><section class="panel"><div class="panel-heading"><h2>资产轨迹</h2><span class="subtle">${e(info.currency)} · ${e(account.last_session || '尚未开始')}</span></div>${account.equity.length > 1 ? chart(account.equity.map(x => ({date:x.date,close:x.value_cents/100})), {label:'模拟账户总资产'}) : blank('100,000.00', '初始虚拟资金 · 运行后逐日积累资产记录')}<div class="paper-chart-note">含现金与持仓市值，已扣模拟费用。最大回撤 ${money(account.max_drawdown_pct)}%。估值以最新成功记账日为准。</div></section><aside class="paper-rules"><div class="eyebrow">实验约定 / V1</div><h2>先把每一步记清楚</h2><dl><div><dt>初始资金</dt><dd>100,000 ${e(info.currency)}</dd></div><div><dt>单只 / 总仓位</dt><dd>20% / 80%</dd></div><div><dt>最多持仓</dt><dd>5 只 · 仅做多</dd></div><div><dt>每边模拟费用</dt><dd>${p.fee_bps / 100}% · 最低 ${p.min_fee}</dd></div><div><dt>每边滑点</dt><dd>${p.slippage_bps / 100}%</dd></div><div><dt>开盘偏离保护</dt><dd>超过 3% 取消</dd></div></dl><p>${e(p.execution)}</p><small>${e(p.limitations)}</small><p>${account.cloud ? (account.intraday ? '交易时段由 GitHub 采样，约每分钟一次。' : '收盘任务由 GitHub 执行。') : '自动运行依赖本机服务保持开启。'}两个账户分别记账、分别启动。</p></aside></div><section class="panel"><div class="panel-heading"><h2>当前持仓 <span class="count-label">${positions.length}</span></h2><span class="subtle">持仓 ${money(account.exposure_pct)}%</span></div>${positions.length ? `<div class="paper-table-wrap"><table class="paper-table"><thead><tr><th>股票</th><th>持股数</th><th>含费用均价</th><th>参考市值</th><th>浮动盈亏</th></tr></thead><tbody>${positions.map(([s,v]) => `<tr><td>${stockLink(market,s,v.name,active)}<small>估值 ${e(v.mark_date)}</small></td><td>${v.quantity}</td><td>${money(v.cost_cents / v.quantity / 100)}</td><td>${amount(v.value_cents)}</td><td class="${direction(v.value_cents-v.cost_cents)}">${amount(v.value_cents-v.cost_cents)}</td></tr>`).join('')}</tbody></table></div>` : blank('目前为空仓', 'Agent 可以选择等待。资金不会为了展示效果而自动买入。')}</section>`;

@@ -14,6 +14,7 @@ from backend.cloud_job import export_book, read, restore_book, watch_items, writ
 from backend.live_quotes import fetch_quotes
 from backend.market import HK, calendar, instrument, market_context
 from backend.paper import PaperService
+from backend.paper_watch import pending_symbols
 from backend.service import ResearchService
 from backend.settings import load_config
 from backend.store import Store
@@ -192,7 +193,9 @@ def run_market(journal, market, window, temp):
             return
         if window == 'scheduled':
             window = scheduled_window(now, market)
-            if window is None and ctx['phase'] == 'closing' and paper.snapshot()['last_session'] != ctx['expected_session']:
+            state = paper.snapshot()
+            needs_close = state['last_session'] != ctx['expected_session'] or pending_symbols(state, ctx['expected_session'])
+            if window is None and ctx['phase'] == 'closing' and needs_close:
                 window = 'close'
             print(f'{market} scheduled at {ctx["now"]}: {window or "outside session"}', flush=True)
             if window is None:

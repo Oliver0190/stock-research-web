@@ -72,6 +72,8 @@ def restore_book(folder, paper):
             status = d.pop('status')
             db.execute('INSERT INTO paper_decisions VALUES(?,?,?,?)',
                 (identifier, d['session'], 'interrupted' if status == 'running' else status, encode(d)))
+    if paper.live_sessions:
+        paper.upgrade_intraday_history()
 
 
 def seed(root, market):

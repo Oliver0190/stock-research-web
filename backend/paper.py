@@ -106,6 +106,13 @@ class PaperService:
             db.execute("INSERT OR IGNORE INTO paper_account VALUES(1,?)", (encode(initial),))
             # An interrupted model run never acquires orders on recovery. An explicit retry is allowed.
             db.execute("UPDATE paper_decisions SET status='interrupted' WHERE status='running'")
+        if self.live_sessions:
+            self.upgrade_intraday_history()
+
+    def upgrade_intraday_history(self):
+        from backend.paper_watch import upgrade_history
+        with self.transaction() as (state, db):
+            upgrade_history(state, db, self.market)
 
     @contextmanager
     def transaction(self):
@@ -298,7 +305,7 @@ class PaperService:
                 db.execute("UPDATE paper_decisions SET status='error',payload=? WHERE id=?", (encode(record), identifier))
                 state["message"] = record["error"]
 
-    def commit_plan(self, record, evidence, generation, *, live=False):
+    def commit_plan(self, record, evidence, generation, *, live=False, baseline=None, affordable=None):
         # Decide the next open after the model FINISHES, never backdate to a passed opening.
         now = self.clock()
         cal = calendar(self.market)
@@ -340,6 +347,12 @@ class PaperService:
                         p = shadow["positions"].setdefault(symbol, {"quantity": 0, "mark_price": detail["raw_close"]})
                         p["quantity"] += qty
                     # Do not pre-spend expected sell proceeds before a sale actually fills.
+            if live and baseline is not None:
+                live_state = state['live']
+                live_state['attempts'] += 1
+                live_state['baseline'] = baseline
+                from backend.paper_watch import add_watch_review
+                add_watch_review(state, record, affordable, self.market)
             db.execute("UPDATE paper_decisions SET status='complete',payload=? WHERE id=?", (encode(record), record["id"]))
             state["message"] = "本轮方案已保存，等待下一交易日。" if record["plan"]["actions"] else "本轮选择继续观察，已保存判断依据。"
             if live and record['plan']['actions']:

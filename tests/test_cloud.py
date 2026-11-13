@@ -150,3 +150,37 @@ class CloudTests(unittest.TestCase):
         volume[0]=1100;tick();self.assertEqual(p.snapshot()['orders'][0]['status'],'filled')
         self.assertEqual(len(calls),1)
         now[0]=now[0].replace(hour=12,minute=20);self.assertEqual(tick(),'closed')
+
+    def test_failed_plan_preserves_quota_and_baseline_and_still_cools_down(self):
+        p = self.paper
+        now = [datetime(2026,11,10,9,35,tzinfo=HK)]
+        p.clock = lambda: now[0]
+        p.enable(True, start_worker=False)
+        symbol = '000001'
+        p.research.items[symbol] = {'name':'样本', 'symbol':symbol}
+        p.store.put_snapshot(symbol, {'data_date':'2026-11-09','complete':True}, now[0].isoformat())
+        price = [10.]
+        def quotes(*_):
+            return {symbol: {'name':'样本','price':price[0],'volume':1000,'at':now[0].isoformat(),'change_pct':3}}
+        def tick():
+            return live_tick(p, lots={symbol:100}, checked={symbol}, quote_fetch=quotes)
+        hold = {'model':'test','trace':[], 'plan':{'summary':'继续观察盘中行情','actions':[]}}
+        with patch.object(p, 'agent', side_effect=[hold, ValueError('test'), hold, hold]) as agent:
+            self.assertEqual(tick(), 'decided')
+            now[0] += timedelta(minutes=30)
+            price[0] = 11
+            self.assertEqual(tick(), 'model-error')
+            live = p.snapshot()['live']
+            self.assertEqual((live['attempts'], live['baseline']), (1, {symbol:10.}))
+            now[0] += timedelta(minutes=1)
+            self.assertEqual(tick(), 'observed')
+            now[0] += timedelta(minutes=29)
+            self.assertEqual(tick(), 'decided')
+            now[0] += timedelta(minutes=30)
+            price[0] = 12
+            self.assertEqual(tick(), 'decided')
+            now[0] = now[0].replace(hour=13)
+            price[0] = 13
+            self.assertEqual(tick(), 'observed')
+            self.assertEqual(agent.call_count, 4)
+            self.assertEqual(p.snapshot()['live']['attempts'], 3)
