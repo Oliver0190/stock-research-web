@@ -37,6 +37,15 @@ def session_window(now, market, window):
     return None
 
 
+def scheduled_window(now, market):
+    """Dispatch by the runner's actual start, including delayed or queued cron events."""
+    for window in ('morning', 'afternoon'):
+        interval = session_window(now, market, window)
+        if interval and interval[0] - timedelta(hours=2) <= now < interval[1]:
+            return window
+    return None
+
+
 def observe_outside_trading(paper, ctx):
     """Sample during the requested shoulders without passing quotes to the order engine."""
     symbols = set(paper.research.watch_items()) | set(paper.snapshot()['positions'])
@@ -181,11 +190,15 @@ def run_market(journal, market, window, temp):
         if not paper.snapshot()['enabled']:
             journal.save(paper, '已暂停')
             return
-        if window == 'auto':
-            window = 'morning' if now.hour < 12 else 'afternoon'
-            interval = session_window(now, market, window)
-            if not interval or not interval[0]-timedelta(hours=2) <= now < interval[1]:
-                window = 'check'
+        if window == 'scheduled':
+            window = scheduled_window(now, market)
+            if window is None and ctx['phase'] == 'closing' and paper.snapshot()['last_session'] != ctx['expected_session']:
+                window = 'close'
+            print(f'{market} scheduled at {ctx["now"]}: {window or "outside session"}', flush=True)
+            if window is None:
+                return
+        elif window == 'auto':
+            window = scheduled_window(now, market) or 'check'
         if window in {'check','close'}:
             if window == 'close' and ctx['phase'] != 'closing':
                 journal.save(paper, '等待下一交易时段')
@@ -252,7 +265,7 @@ def run_market(journal, market, window, temp):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('window', choices=['morning','afternoon','close','check','auto'])
+    parser.add_argument('window', choices=['scheduled','morning','afternoon','close','check','auto'])
     parser.add_argument('journal', type=Path)
     args = parser.parse_args()
     journal = Journal(args.journal.resolve())

@@ -1,6 +1,8 @@
 name: 盘中模拟实验
 on:
   schedule:
+    # UTC+8: 02:17 Mon-Fri. This wake-up can cover the open when cron is hours late.
+    - cron: '17 18 * * 0-4'
     # UTC+8: 08:07, 08:47 and 09:43 for the morning window.
     - cron: '7,47 0 * * 1-5'
     - cron: '43 1 * * 1-5'
@@ -24,7 +26,7 @@ jobs:
   session:
     if: github.repository == 'Oliver0190/stock-research-web' && github.ref == 'refs/heads/main' && !github.event.repository.private && vars.PAPER_SESSIONS_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 270
+    timeout-minutes: 320
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -42,7 +44,7 @@ jobs:
       - name: Run session and checkpoint the private journal
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          WINDOW: ${{ inputs.window || (github.event.schedule == '47 8 * * 1-5' && 'close') || ((github.event.schedule == '7,47 0 * * 1-5' || github.event.schedule == '43 1 * * 1-5') && 'morning') || 'afternoon' }}
+          WINDOW: ${{ inputs.window || 'scheduled' }}
         run: |
           if [ -z "$DEEPSEEK_API_KEY" ]; then echo "::error::Missing model secret"; exit 1; fi
           python -m backend.cloud_sessions "$WINDOW" journal

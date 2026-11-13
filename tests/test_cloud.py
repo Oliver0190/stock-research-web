@@ -11,7 +11,7 @@ from backend.live_quotes import parse_quotes
 from backend.market import HK
 from backend.paper import PaperService
 from backend.paper_live import live_tick
-from backend.cloud_sessions import session_window, apply_control, observe_outside_trading
+from backend.cloud_sessions import session_window, scheduled_window, apply_control, observe_outside_trading
 from backend.service import ResearchService
 from backend.store import Store, encode
 
@@ -90,6 +90,18 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.paper.snapshot()['generation'],generation)
         apply_control(self.paper,{**controls,'enabled':False})
         self.assertFalse(self.paper.snapshot()['enabled'])
+
+    def test_delayed_cron_uses_current_watch_window(self):
+        now = datetime(2026, 11, 12, 15, 0, tzinfo=HK)  # Yesterday's morning cron arrived at 15:00.
+        for market in ('A', 'HK'):
+            self.assertEqual(scheduled_window(now, market), 'afternoon')
+            self.assertEqual(scheduled_window(now.replace(hour=8), market), 'morning')
+            self.assertEqual(scheduled_window(now.replace(hour=12), market), 'afternoon')
+            self.assertIsNone(scheduled_window(now.replace(hour=2), market))
+            self.assertIsNone(scheduled_window(now.replace(day=14), market))
+        self.assertIsNone(scheduled_window(now.replace(minute=30), 'A'))
+        self.assertEqual(scheduled_window(now.replace(minute=30), 'HK'), 'afternoon')
+        self.assertIsNone(scheduled_window(now.replace(month=12, day=24), 'HK'))
 
     def test_a_observation_outside_trading_leaves_the_account_untouched(self):
         from backend.market import market_context
