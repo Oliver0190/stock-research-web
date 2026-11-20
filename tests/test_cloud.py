@@ -55,6 +55,41 @@ class CloudTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             restore_book(folder,self.paper)
 
+    def test_capital_target_preserves_performance_and_survives_restore(self):
+        from backend.paper_watch import historical_portfolio
+
+        now = datetime(2026, 11, 10, 14, tzinfo=HK)
+        self.paper.clock = lambda: now
+        with self.paper.transaction() as (s, _):
+            s.update(last_session='2026-11-06', cash_cents=9_000_000,
+                     positions={'000001': {'quantity': 100, 'mark_price': 80}},
+                     equity=[{'date': '2026-11-06', 'value_cents': 9_800_000}])
+        before = self.paper.snapshot()
+        settings = {'capital_target_cents': 20_000_000, 'watchlist': [], 'enabled': False}
+        self.assertTrue(apply_control(self.paper, settings))
+        after = self.paper.snapshot()
+        self.assertEqual(after['cash_cents'], before['cash_cents'] + 10_000_000)
+        self.assertEqual(after['contributed_cents'], 20_000_000)
+        for key in ('pnl_cents', 'positions', 'orders', 'equity', 'max_drawdown_pct'):
+            self.assertEqual(after[key], before[key])
+        self.assertAlmostEqual(after['return_pct'], before['return_pct'])
+        for delta, expected in [(-1, 10_000_000), (1, 20_000_000)]:
+            record = {'created_at': (now + timedelta(seconds=delta)).isoformat()}
+            self.assertEqual(historical_portfolio(after, record)['cash_cents'], expected)
+        folder = self.root / 'state' / 'A'
+        with self.paper.store.connect() as db:
+            export_book(db, folder, 'A')
+        restored = self.paper_at('restored.db')
+        restore_book(folder, restored)
+        self.assertFalse(apply_control(restored, settings))
+        self.assertEqual(restored.snapshot()['contributions'], after['contributions'])
+        rows = [{'date': day, 'open': 80, 'close': 80} for day in ['2026-11-09', '2026-11-10']]
+        self.assertTrue(restored.settle({'000001': {'rows': rows}}, '2026-11-10'))
+        settled = restored.snapshot()
+        self.assertEqual([x['value_cents'] for x in settled['equity'][-2:]],
+                         [before['equity_cents'], after['equity_cents']])
+        self.assertAlmostEqual(settled['max_drawdown_pct'], -before['return_pct'])
+
     def test_cloud_unavailable_never_starts_local_account(self):
         cloud=CloudPaper('owner/private-journal','A',self.root)
         with patch.object(cloud,'call',side_effect=CloudError('offline')):

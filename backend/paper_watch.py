@@ -4,7 +4,7 @@ import math
 from datetime import datetime
 
 from backend.market import calendar
-from backend.paper import validate_action
+from backend.paper import contributed_cents, validate_action
 
 
 HORIZONS = (1, 3, 5)
@@ -39,7 +39,7 @@ def add_watch_review(state, record, affordable, market):
 def historical_portfolio(state, record):
     """Replay recorded fills through the cutoff, valuing holdings only at saved quotes."""
     cutoff = datetime.fromisoformat(record['created_at'])
-    cash, quantities = state['initial_cents'], {}
+    cash, quantities = contributed_cents(state, cutoff), {}
     for order in state['orders']:
         if datetime.fromisoformat(order['created_at']) >= cutoff:
             continue

@@ -126,6 +126,10 @@ def apply_control(paper, control):
     items = watch_items(control['watchlist'], paper.market)
     with paper.research.lock:
         paper.research.items = {i['symbol']: {**i, **instrument(i['symbol'], paper.market)} for i in items}
+    target = control.get('capital_target_cents')
+    if target is not None and target != state['contributed_cents']:
+        return paper.fund_to(target)
+    return False
 
 
 def prepare_research(paper, ctx, folder):
@@ -186,7 +190,8 @@ def run_market(journal, market, window, temp):
     paper = PaperService(research, mode='intraday')
     try:
         restore_book(folder, paper)
-        apply_control(paper, initial)
+        if apply_control(paper, initial):
+            journal.save(paper, '追加虚拟资金已入账')
         now = paper.clock()
         ctx = market_context(now, market)
         if not paper.snapshot()['enabled']:
@@ -228,7 +233,8 @@ def run_market(journal, market, window, temp):
         while paper.clock() < interval[1]:
             started = time.monotonic()
             control = journal.control(market)
-            apply_control(paper, control)
+            if apply_control(paper, control):
+                journal.save(paper, '追加虚拟资金已入账')
             if not paper.snapshot()['enabled']:
                 journal.save(paper, '已暂停')
                 return

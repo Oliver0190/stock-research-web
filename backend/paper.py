@@ -32,6 +32,15 @@ def position_value(position):
     return cents(Decimal(str(position["mark_price"])) * position["quantity"])
 
 
+def contributions_through(state, cutoff=None):
+    return [entry for entry in state.get('contributions', [])
+            if cutoff is None or datetime.fromisoformat(entry['at']) <= cutoff]
+
+
+def contributed_cents(state, cutoff=None):
+    return state['initial_cents'] + sum(entry['amount_cents'] for entry in contributions_through(state, cutoff))
+
+
 def fee(notional, market):
     return max(500, int((Decimal(notional) * (Decimal(".002") if market == "HK" else Decimal(".001")))
                        .quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
@@ -131,6 +140,22 @@ class PaperService:
             yield state, db
             db.execute("UPDATE paper_account SET payload=? WHERE id=1", (encode(state),))
 
+    def fund_to(self, target):
+        """Credit the difference from cumulative funding, once across retries and restores."""
+        if type(target) is not int or target <= 0:
+            raise ValueError('Invalid paper capital target')
+        with self.transaction() as (state, _):
+            amount = target - contributed_cents(state)
+            if amount <= 0:
+                return False
+            equity = state['cash_cents'] + sum(position_value(p) for p in state['positions'].values())
+            if equity <= 0:
+                raise ValueError('Cannot value existing paper account units')
+            state.setdefault('contributions', []).append({
+                'at': self.clock().isoformat(), 'amount_cents': amount, 'equity_before_cents': equity})
+            state['cash_cents'] += amount
+            return True
+
     def snapshot(self):
         with self.store.connect() as db:
             state = json.loads(db.execute("SELECT payload FROM paper_account WHERE id=1").fetchone()[0])
@@ -140,10 +165,17 @@ class PaperService:
             p["value_cents"] = position_value(p)
         exposure = sum(p["value_cents"] for p in state["positions"].values())
         equity = state["cash_cents"] + exposure
-        peak, drawdown = INITIAL, 0
+        # Each deposit purchases units at the account's prevailing valuation.
+        factors = [1.0]
+        for entry in state.get('contributions', []):
+            before = entry['equity_before_cents']
+            factors.append(factors[-1] * (before / (before + entry['amount_cents'])))
+        principal = contributed_cents(state)
+        peak, drawdown = state['initial_cents'], 0
         for point in state["equity"]:
-            peak = max(peak, point["value_cents"])
-            drawdown = max(drawdown, (peak - point["value_cents"]) / peak * 100)
+            adjusted = point["value_cents"] * factors[point.get('contribution_count', 0)]
+            peak = max(peak, adjusted)
+            drawdown = max(drawdown, (peak - adjusted) / peak * 100)
         # Large tool results stay durable in SQLite and are fetched only for a particular decision.
         for decision in decisions:
             decision.pop("evidence", None)
@@ -154,7 +186,8 @@ class PaperService:
         return {**state, 'intraday': self.live_sessions is not None, "orders": state["orders"][-100:], "reviews": state["reviews"][-100:],
                 "decisions": decisions, "running": self.running, "policy": rules,
                 "ai_available": bool(os.environ.get("DEEPSEEK_API_KEY")), "equity_cents": equity,
-                "pnl_cents": equity - INITIAL, "return_pct": (equity / INITIAL - 1) * 100,
+                "contributed_cents": principal, "pnl_cents": equity - principal,
+                "return_pct": (equity * factors[-1] / state['initial_cents'] - 1) * 100,
                 "exposure_pct": exposure / equity * 100 if equity > 0 else 0, "max_drawdown_pct": drawdown}
 
     def decision(self, identifier):
@@ -373,7 +406,9 @@ class PaperService:
                 return False
             if state["last_session"] is None:
                 state["last_session"] = through
-                state["equity"].append({"date": self.clock().date().isoformat(), "value_cents": INITIAL})
+                close = calendar(self.market).session_close(through).to_pydatetime()
+                state["equity"].append({"date": through, "value_cents": contributed_cents(state, close),
+                                        "contribution_count": len(contributions_through(state, close))})
                 return True
             if state["last_session"] >= through:
                 return True
@@ -412,14 +447,19 @@ class PaperService:
                     elif abs(row["open"] / order["reference"] - 1) > .03:
                         error = "开盘相对决策参考价偏离超过 3%，订单到期"
                     if not error:
-                        self.fill(state, order, row, day)
+                        opening = cal.session_open(day).to_pydatetime()
+                        later_cash = contributed_cents(state) - contributed_cents(state, opening)
+                        self.fill(state, order, row, day, unavailable_cash=later_cash)
                     else:
                         order.update(status="expired", result=error)
                 for symbol, p in state["positions"].items():
                     p.update(mark_price=lookup[symbol][day]["close"], mark_date=day)
                 state["last_session"] = day
                 equity = state["cash_cents"] + sum(position_value(p) for p in state["positions"].values())
-                point = {"date": day, "value_cents": equity}
+                close = cal.session_close(day).to_pydatetime()
+                later_cash = contributed_cents(state) - contributed_cents(state, close)
+                point = {"date": day, "value_cents": equity - later_cash,
+                         "contribution_count": len(contributions_through(state, close))}
                 if state["equity"] and state["equity"][-1]["date"] == day:
                     state["equity"][-1] = point
                 else:
@@ -428,14 +468,15 @@ class PaperService:
             state["message"] = f"账本已更新至 {through}。"
             return True
 
-    def fill(self, state, order, row, day):
+    def fill(self, state, order, row, day, *, unavailable_cash=0):
         symbol, qty, side = order["symbol"], order["quantity"], order["side"]
         slip = Decimal(".001") if self.market == "HK" else Decimal(".0005")
         price = Decimal(str(row["open"])) * (1 + slip if side == "buy" else 1 - slip)
         price = price.quantize(Decimal(".0001"), rounding=ROUND_HALF_UP)
         value, costs = cents(price * qty), fee(cents(price * qty), self.market)
         available = {symbol: {"tradable": True, "raw_close": float(price), "lot": order["lot"]}}
-        error = validate_action(order, state, available, self.market)
+        budget = {**state, 'cash_cents': state['cash_cents'] - unavailable_cash}
+        error = validate_action(order, budget, available, self.market)
         position = state["positions"].get(symbol)
         if side == "sell" and self.market == "A" and position:
             if qty > sellable_quantity(position, day, self.market):
