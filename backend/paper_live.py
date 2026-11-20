@@ -6,7 +6,7 @@ import uuid
 
 from backend.live_quotes import fetch_quotes
 from backend.market import market_context
-from backend.paper import policy
+from backend.paper import cents, policy
 from backend.paper_agent import Plan, propose
 from backend.store import encode
 from backend.paper_watch import affordable_symbols, update_watch_prices, pending_symbols
@@ -20,6 +20,7 @@ class LiveSessions:
         self.ready=None
         self.checked=set()
         self.lots={}
+        self.previous_closes = {}
 
     def raw(self,symbols):
         data={}
@@ -47,27 +48,33 @@ class LiveSessions:
             update_watch_prices(p, raw, through)
             return 'settled' if p.settle(raw,through) else 'incomplete'
         if ctx['phase']!='intraday' or not snapshot['enabled']:return 'closed'
-        key=(ctx['today'],tuple(sorted(symbols)))
+        key=(ctx['today'],tuple(sorted(symbols)),tuple(sorted(snapshot['positions'])))
         if self.ready!=key:
             raw=self.raw(symbols | pending_symbols(snapshot, through))
             update_watch_prices(p, raw, through)
             if not p.settle(raw,ctx['expected_session']):return 'incomplete'
             self.checked=set()
+            self.previous_closes = {}
             for s in symbols.intersection(raw):
                 v = raw[s]
                 previous=[r for r in v['rows'] if r['date']<=ctx['expected_session']]
                 today=next((r for r in v['rows'] if r['date']==ctx['today']),None)
                 if len(previous)<30 or previous[-1]['date']!=ctx['expected_session']:continue
-                if today and (today.get('split') or today.get('dividend')):continue
-                if s in snapshot['positions'] and not today:continue
+                flags = v.get('latest_actions') or {}
+                if flags.get('date') != ctx['today']:
+                    flags = today
+                if flags and (flags.get('split') != 0 or flags.get('dividend') != 0):continue
+                if s in snapshot['positions'] and not flags:continue
+                if p.market == 'A' and s in snapshot['positions']:
+                    self.previous_closes[s] = previous[-1]['close']
                 self.checked.add(s)
             self.lots=p.fetcher('','lots','')['lots'] if p.market=='HK' else {s:(200 if s.startswith('688') else 100) for s in symbols}
             if self.checked and set(snapshot['positions'])<=self.checked:self.ready=key
         # Slow reference fetches may cross lunch or the close; live_tick checks the clock anew.
-        return live_tick(p,lots=self.lots,checked=self.checked)
+        return live_tick(p,lots=self.lots,checked=self.checked,previous_closes=self.previous_closes)
 
 
-def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=False):
+def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=False, previous_closes=None):
     now, market = paper.clock(), paper.market
     ctx = market_context(now,market)
     if ctx['phase'] != 'intraday':
@@ -90,8 +97,19 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
             live.clear();live.update(day=day, attempts=0, baseline={}, last_attempt=None)
         live.update(observed_at=now.isoformat(), fresh=len(quotes), requested=len(symbols))
         # Refuse to update any existing position or trade against stale/missing holdings.
-        if any(x not in checked or x not in quotes for x in s['positions']):
-            s['message']='持仓行情或公司行动未核验，盘中估值与交易暂停。'
+        issues = []
+        for symbol in s['positions']:
+            if symbol not in checked:
+                reason = '等待交易历史或当日分红拆股核验'
+            elif symbol not in quotes:
+                reason = '等待有效盘中报价'
+            elif symbol in (previous_closes or {}) and cents(quotes[symbol]['previous_close']) != cents(previous_closes[symbol]):
+                reason = '报价昨收与不复权收盘价不一致'
+            else:
+                continue
+            issues.append(f"{symbol} {reason}")
+        if issues:
+            s['message'] = '；'.join(issues) + '，本轮暂停交易。'
             return 'missing-holding-data'
         for symbol,p in s['positions'].items():
             p.update(mark_price=quotes[symbol]['price'],mark_date=day)
@@ -121,8 +139,14 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
                           for sym, q in eligible.items())
         else:
             trigger = any(abs(q['change_pct']) >= 2 for q in eligible.values())
-        if (not trigger or live['attempts']>=3 or (live['last_attempt'] and
-                (now-datetime.fromisoformat(live['last_attempt'])).total_seconds()<1800)):
+        if live['attempts'] >= 3:
+            s['message'] = '本日已完成 3 轮决策，继续监测行情。'
+            return 'observed'
+        if not trigger:
+            s['message'] = '已检查行情，本轮未达到 2% 变动条件。'
+            return 'observed'
+        if live['last_attempt'] and (now-datetime.fromisoformat(live['last_attempt'])).total_seconds()<1800:
+            s['message'] = '已检查行情，距上次模型调用不足 30 分钟。'
             return 'observed'
         if db.execute("SELECT 1 FROM paper_decisions WHERE session=? AND status='running'", (day,)).fetchone():
             return 'observed'
@@ -151,7 +175,10 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
         rules={**policy(market),'execution':'决策完成后五分钟内，按后续有新增成交量的新报价加滑点模拟成交。'}
         context={'market':market,'currency':current['currency'],'session':day,'cutoff':now.isoformat(),
                 'cash':current['cash_cents']/100,'positions':current['positions'],'policy':rules,'recent_reviews':current['reviews'][-5:],
-                'stocks':[{k:v[k] for k in ('symbol','name','tradable','raw_close','lot','quote_change_pct')} for v in data.values()]}
+                'stocks':[{**{k:v[k] for k in ('symbol','name','tradable','raw_close','lot','quote_change_pct')},
+                           'one_lot_cost':round(v['raw_close'] * v['lot'], 2),
+                           'one_lot_pct_of_equity':round(v['raw_close'] * v['lot'] * 10000 / current['equity_cents'], 2),
+                           'can_buy_one_lot':v['symbol'] in affordable} for v in data.values()]}
         answer=paper.agent(context,data,paper.research.config['llm']['model'])
         plan=Plan.model_validate(answer['plan']).model_dump()
         if len(set(a['symbol'] for a in plan['actions']))!=len(plan['actions']):raise ValueError('重复股票')

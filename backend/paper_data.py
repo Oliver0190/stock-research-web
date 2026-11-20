@@ -44,6 +44,9 @@ def execution_data(symbol, market):
             "dividend": float(row.get("Dividends", 0)), "split": float(row.get("Stock Splits", 0))})
     if any(not math.isfinite(r[k]) or r[k] < 0 for r in rows for k in ("dividend", "split")):
         raise ValueError("公司行动数据异常")
+    # During a session the actions feed can cover today before the unadjusted
+    # daily-price feed does. Keep this dated observation separate from price bars.
+    latest_actions = {k: rows[-1][k] for k in ("date", "dividend", "split")}
     source = "Yahoo Finance · auto_adjust=False"
     if market == "A":
         # Yahoo A-share OHLC can have incompatible historical adjustments. Tencent's
@@ -64,4 +67,4 @@ def execution_data(symbol, market):
             rows.append({**row, **actions[row["date"]]})
         source = "腾讯证券 · 不复权；Yahoo Finance 公司行动"
     normalize_frame(rows)
-    return {"rows": rows, "currency": currency, "source": source}
+    return {"rows": rows, "currency": currency, "source": source, "latest_actions": latest_actions}

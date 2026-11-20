@@ -8,9 +8,9 @@ from unittest.mock import patch
 from backend.cloud_client import CloudError, CloudPaper
 from backend.cloud_job import export_book, read, restore_book, run_market, watch_items, write
 from backend.live_quotes import parse_quotes
-from backend.market import HK
+from backend.market import HK, market_context
 from backend.paper import PaperService
-from backend.paper_live import live_tick
+from backend.paper_live import LiveSessions, live_tick
 from backend.cloud_sessions import session_window, scheduled_window, apply_control, observe_outside_trading
 from backend.service import ResearchService
 from backend.store import Store, encode
@@ -124,6 +124,31 @@ class CloudTests(unittest.TestCase):
         fields[30]='2026/11/10 09:45:12';self.assertFalse(parse())
         fields[30]='2026/11/10 10:00:40';self.assertFalse(parse())
         fields[30]='2026/11/10 10:00:10';fields[2]='00001';self.assertFalse(parse())
+
+    def test_held_share_can_use_dated_action_feed_before_daily_bar_is_published(self):
+        p, symbol = self.paper, '002222'
+        now = datetime(2026,11,20,14,tzinfo=HK)
+        p.clock = lambda: now
+        p.enable(True,start_worker=False)
+        with p.transaction() as (state, _):
+            state['last_session'] = '2026-11-19'
+            state['positions'][symbol] = {'name':'样本','quantity':100,'mark_price':50}
+        ctx = market_context(now, 'A')
+        history = [{'date':(now-timedelta(days=i)).date().isoformat(),'close':50}
+                   for i in range(35,0,-1)]
+        quote = {'price':50.1,'previous_close':50,'name':'样本','volume':1000,'change_pct':0.2,'at':now.isoformat()}
+        def observe(paper, **kwargs):
+            return live_tick(paper, **kwargs, quote_fetch=lambda *_:{symbol:quote})
+        for day, dividend, split, yesterday, expected in [
+            ('2026-11-20',0,0,50,'observed'), ('2026-11-19',0,0,50,'missing-holding-data'),
+            ('2026-11-20',0.1,0,50,'missing-holding-data'),('2026-11-20',0,2,50,'missing-holding-data'),
+            ('2026-11-20',0,0,49.9,'missing-holding-data')]:
+            with self.subTest(day=day, dividend=dividend, split=split, yesterday=yesterday):
+                worker = LiveSessions(p)
+                raw = {symbol:{'rows':history,'latest_actions':{'date':day,'split':split,'dividend':dividend}}}
+                quote['previous_close'] = yesterday
+                with patch.object(worker,'raw',return_value=raw), patch('backend.paper_live.live_tick',side_effect=observe):
+                    self.assertEqual(worker.tick(ctx),expected)
 
     def test_live_decision_needs_later_quote_and_new_volume_and_does_not_run_at_lunch(self):
         p=self.paper

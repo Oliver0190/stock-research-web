@@ -1,5 +1,6 @@
 """Run a bounded forward test against new market observations, with a private Git journal."""
 import argparse
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -261,6 +262,7 @@ def run_market(journal, market, window, temp):
             remaining = (interval[1] - paper.clock()).total_seconds()
             time.sleep(max(0, min(remaining, 60 - (time.monotonic()-started))))
         journal.save(paper, '本交易时段结束')
+        return window == 'morning' and session_window(paper.clock(), market, 'afternoon') is not None
     finally:
         paper.close()
         research.close()
@@ -283,8 +285,10 @@ def main():
     journal.git('config','user.email','paper-session@users.noreply.github.com')
     with tempfile.TemporaryDirectory() as tmp, ThreadPoolExecutor(max_workers=2) as pool:
         jobs = [pool.submit(run_market, journal, market, args.window, Path(tmp)) for market in ('A','HK')]
-        for job in jobs:
-            job.result()
+        finished_mornings = [job.result() for job in jobs]
+    if os.environ.get('GITHUB_OUTPUT') and any(finished_mornings):
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            print('resume_afternoon=true', file=output)
 
 
 if __name__ == '__main__':
