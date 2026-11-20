@@ -6,7 +6,7 @@ import uuid
 
 from backend.live_quotes import fetch_quotes
 from backend.market import market_context
-from backend.paper import cents, policy
+from backend.paper import cents, policy, sellable_quantity
 from backend.paper_agent import Plan, propose
 from backend.store import encode
 from backend.paper_watch import affordable_symbols, update_watch_prices, pending_symbols
@@ -172,9 +172,14 @@ def live_tick(paper, *, lots, checked, quote_fetch=fetch_quotes, monitor_only=Fa
         db.execute('INSERT INTO paper_decisions VALUES(?,?,?,?)',(record['id'],day,'running',encode(record)))
     try:
         current=paper.snapshot()
+        positions = {
+            symbol: {**{k: v for k, v in pos.items() if k not in ('locked_quantity', 'locked_on')},
+                     'sellable_quantity': sellable_quantity(pos, day, market)}
+            for symbol, pos in current['positions'].items()
+        }
         rules={**policy(market),'execution':'决策完成后五分钟内，按后续有新增成交量的新报价加滑点模拟成交。'}
         context={'market':market,'currency':current['currency'],'session':day,'cutoff':now.isoformat(),
-                'cash':current['cash_cents']/100,'positions':current['positions'],'policy':rules,'recent_reviews':current['reviews'][-5:],
+                'cash':current['cash_cents']/100,'positions':positions,'policy':rules,'recent_reviews':current['reviews'][-5:],
                 'stocks':[{**{k:v[k] for k in ('symbol','name','tradable','raw_close','lot','quote_change_pct')},
                            'one_lot_cost':round(v['raw_close'] * v['lot'], 2),
                            'one_lot_pct_of_equity':round(v['raw_close'] * v['lot'] * 10000 / current['equity_cents'], 2),

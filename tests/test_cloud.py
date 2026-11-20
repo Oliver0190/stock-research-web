@@ -9,7 +9,7 @@ from backend.cloud_client import CloudError, CloudPaper
 from backend.cloud_job import export_book, read, restore_book, run_market, watch_items, write
 from backend.live_quotes import parse_quotes
 from backend.market import HK, market_context
-from backend.paper import PaperService
+from backend.paper import PaperService, sellable_quantity
 from backend.paper_live import LiveSessions, live_tick
 from backend.cloud_sessions import session_window, scheduled_window, apply_control, observe_outside_trading
 from backend.service import ResearchService
@@ -149,6 +149,11 @@ class CloudTests(unittest.TestCase):
                 quote['previous_close'] = yesterday
                 with patch.object(worker,'raw',return_value=raw), patch('backend.paper_live.live_tick',side_effect=observe):
                     self.assertEqual(worker.tick(ctx),expected)
+
+    def test_sellable_quantity_uses_the_lock_date_for_added_shares(self):
+        position = {'quantity':300, 'opened_on':'2026-11-11', 'locked_on':'2026-11-19', 'locked_quantity':100}
+        self.assertEqual(sellable_quantity(position,'2026-11-19','A'),200)
+        self.assertEqual(sellable_quantity(position,'2026-11-20','A'),300)
 
     def test_live_decision_needs_later_quote_and_new_volume_and_does_not_run_at_lunch(self):
         p=self.paper

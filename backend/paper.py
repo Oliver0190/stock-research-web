@@ -51,6 +51,15 @@ def quantity_ok(symbol, quantity, lot, market):
     return lot > 0 and quantity % lot == 0
 
 
+def sellable_quantity(position, day, market):
+    if market != 'A':
+        return position['quantity']
+    if position['opened_on'] == day:
+        return 0
+    locked = position.get('locked_quantity', 0) if position.get('locked_on') == day else 0
+    return position['quantity'] - locked
+
+
 def validate_action(action, account, available, market):
     symbol, qty = action["symbol"], action["quantity"]
     data = available.get(symbol)
@@ -429,8 +438,7 @@ class PaperService:
         error = validate_action(order, state, available, self.market)
         position = state["positions"].get(symbol)
         if side == "sell" and self.market == "A" and position:
-            locked = position.get('locked_quantity', 0) if position.get('locked_on') == day else 0
-            if position['opened_on'] == day or qty > position['quantity'] - locked:
+            if qty > sellable_quantity(position, day, self.market):
                 error = "A 股当日新买入持仓不能卖出"
         if error:
             order.update(status="rejected", result=error)
